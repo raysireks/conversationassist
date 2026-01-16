@@ -48,7 +48,8 @@ async def send_audio():
                         response = await websocket.recv()
                         data = json.loads(response)
                         if data.get("type") == "transcription":
-                            print("\n[RECEIVED TRANSCRIPTION]:")
+                            final_tag = "[FINAL]" if data.get("is_final") else "[PARTIAL]"
+                            print(f"\n[RECEIVED TRANSCRIPTION] {final_tag}:")
                             for segment in data["segments"]:
                                 print(f"  {segment['start']}-{segment['end']}: {segment['text']}")
                 except websockets.exceptions.ConnectionClosed:
