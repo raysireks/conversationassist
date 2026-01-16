@@ -27,8 +27,35 @@ This is a standalone Python-based WebSocket server that leverages local GPU/CPU 
    ```
 
 ### Running the Server
+You can run the server using the `npm` scripts defined in `package.json`:
+
+### Running the Server
+You can run the server using the `npm` scripts defined in `package.json`.
+
+**For Development (Mac or WSL CPU-only):**
+This uses your local `venv` environment.
 ```bash
+npm run dev:mac
+# OR
+npm run dev:wsl
+```
+
+**For Production / GPU (Windows via WSL + Docker):**
+This builds and runs the Docker container with NVIDIA GPU support.
+*Requires Docker Desktop with WSL 2 backend and NVIDIA Container Toolkit.*
+```bash
+npm run start:gpu
+```
+
+Alternatively, run manually:
+```bash
+# Local
+source venv/bin/activate
 python main.py
+
+# Docker
+docker build -t transcription-backend .
+docker run --gpus all -p 8000:8000 transcription-backend
 ```
 The server will start on `http://localhost:8000`.
 

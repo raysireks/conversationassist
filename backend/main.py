@@ -37,6 +37,7 @@ class TranscriptionWorker:
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run)
         self.buffer = np.array([], dtype=np.float32)
+        self.loop = asyncio.get_running_loop()
 
     def start(self):
         self.thread.start()
@@ -49,9 +50,6 @@ class TranscriptionWorker:
         self.audio_queue.put(data)
 
     def _run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
         while not self.stop_event.is_set():
             try:
                 # Wait for audio chunks
@@ -94,7 +92,7 @@ class TranscriptionWorker:
                                 "segments": results,
                                 "is_final": False # In this simplified version, all are "current"
                             }),
-                            loop
+                            self.loop
                         )
                     
                     # Manage buffer: keep some context but don't let it grow infinitely

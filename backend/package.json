@@ -1,0 +1,15 @@
+{
+    "name": "transcription-backend",
+    "version": "1.0.0",
+    "description": "Local Transcription Backend using Faster-Whisper",
+    "scripts": {
+        "dev:mac": "source venv/bin/activate && python main.py",
+        "dev:wsl": "source venv/bin/activate && python main.py",
+        "docker:build": "docker build -t transcription-backend .",
+        "docker:run": "docker run --gpus all -p 8000:8000 transcription-backend",
+        "start:gpu": "npm run docker:build && npm run docker:run",
+        "setup": "python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+    },
+    "author": "",
+    "license": "MIT"
+}
