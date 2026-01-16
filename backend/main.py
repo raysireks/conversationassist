@@ -4,7 +4,8 @@ import logging
 import numpy as np
 import threading
 import queue
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from typing import List, Dict, Set
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from faster_whisper import WhisperModel
 
 # Setup logging
@@ -15,7 +16,7 @@ app = FastAPI(title="Local Transcription Backend")
 
 # Initialize Whisper Model
 MODEL_SIZE = "base" # base, small, medium, large-v3
-DEVICE = "cuda" if threading.active_count() > 0 else "cpu" # Default to cpu if check fails, but we'll try cuda
+DEVICE = "cuda" if threading.active_count() > 0 else "cpu" 
 
 try:
     # RTX 3080 supports float16
@@ -29,10 +30,66 @@ except Exception as e:
 async def root():
     return {"status": "online", "model": MODEL_SIZE, "device": model.model.device}
 
+class SessionManager:
+    def __init__(self):
+        self.active_viewers: Set[WebSocket] = set()
+        self.active_listeners: Set[WebSocket] = set()
+        self.history: List[Dict] = []
+        self.lock = asyncio.Lock()
+
+    async def add_viewer(self, websocket: WebSocket):
+        async with self.lock:
+            self.active_viewers.add(websocket)
+            # Send current history to the new viewer
+            await websocket.send_json({
+                "type": "session_state",
+                "history": self.history
+            })
+
+    async def remove_viewer(self, websocket: WebSocket):
+        async with self.lock:
+            self.active_viewers.remove(websocket)
+
+    async def add_listener(self, websocket: WebSocket):
+        async with self.lock:
+            self.active_listeners.add(websocket)
+
+    async def remove_listener(self, websocket: WebSocket):
+        async with self.lock:
+            self.active_listeners.remove(websocket)
+
+    async def broadcast_update(self, segments: List[Dict], is_final: bool):
+        message = {
+            "type": "transcription_update",
+            "segments": segments,
+            "is_final": is_final
+        }
+        
+        async with self.lock:
+            if is_final:
+                self.history.append({
+                    "segments": segments,
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+            
+            # Broadcast to all viewers
+            disconnected = []
+            for viewer in self.active_viewers:
+                try:
+                    await viewer.send_json(message)
+                except Exception:
+                    disconnected.append(viewer)
+            
+            for viewer in disconnected:
+                self.active_viewers.remove(viewer)
+
+session_manager = SessionManager()
+
 class TranscriptionWorker:
-    def __init__(self, model, websocket):
+    def __init__(self, model, websocket, session_manager):
         self.model = model
         self.websocket = websocket
+        self.session_manager = session_manager
         self.audio_queue = queue.Queue()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run)
@@ -52,28 +109,18 @@ class TranscriptionWorker:
     def _run(self):
         while not self.stop_event.is_set():
             try:
-                # Wait for audio chunks
                 try:
                     chunk = self.audio_queue.get(timeout=0.1)
                     self.buffer = np.concatenate([self.buffer, chunk])
                 except queue.Empty:
                     pass
 
-                # TRANSCRIPTION LOGIC:
-                # Strategy:
-                # 1. Accumulate at least 1.0s to avoid hallucination.
-                # 2. Run Whisper on buffer.
-                # 3. If we detect a "completed phrase" (silence at end), mark as Final and clear buffer.
-                
                 total_duration = len(self.buffer) / 16000.0
                 if total_duration >= 1.0: 
-                    
                     audio_to_process = self.buffer
-                    # Cap context at 30s
                     if len(audio_to_process) > 16000 * 30:
                         audio_to_process = audio_to_process[-16000*30:]
 
-                    # Transcribe
                     segments, info = self.model.transcribe(
                         audio_to_process,
                         beam_size=5,
@@ -85,7 +132,6 @@ class TranscriptionWorker:
                     
                     results = []
                     last_segment_end = 0.0
-                    
                     for segment in segments:
                         results.append({
                             "start": round(segment.start, 2),
@@ -95,71 +141,64 @@ class TranscriptionWorker:
                         })
                         last_segment_end = segment.end
                     
-                    # Logic to determine if we should "Finalize" (Commit) this text
-                    # If silence at the end > 1.0s, or if buffer is getting huge
-                    
                     is_final = False
                     should_clear_buffer = False
                     
                     if results:
-                        # Check trailing silence
                         silence_duration = total_duration - last_segment_end
                         if silence_duration > 1.0:
                             is_final = True
                             should_clear_buffer = True
                     else:
-                        # No speech detected
-                        # If buffer is long (>5s) and empty, clear it to reset state
                         if total_duration > 5.0:
                             should_clear_buffer = True
 
                     if results:
+                        # Report to SessionManager instead of just sending back to the local client
                         asyncio.run_coroutine_threadsafe(
-                            self.websocket.send_json({
-                                "type": "transcription",
-                                "segments": results,
-                                "is_final": is_final 
-                            }),
+                            self.session_manager.broadcast_update(results, is_final),
                             self.loop
                         )
                     
-                    # Smart Buffer Management
                     if should_clear_buffer:
-                        # If we finalized, we clear the buffer to start fresh
-                        # This keeps latency low and prevents reprocessing "committed" audio
                         self.buffer = np.array([], dtype=np.float32)
                     elif len(self.buffer) > 16000 * 30:
-                        # Safety fallback: Drop old audio if we haven't finalized in 30s
                          self.buffer = self.buffer[-16000 * 10:] 
                 
             except Exception as e:
                 logger.error(f"Error in transcription worker: {e}")
 
-@app.websocket("/ws/transcribe")
-async def transcribe_websocket(websocket: WebSocket):
+@app.websocket("/ws/session")
+async def session_websocket(websocket: WebSocket, role: str = Query(...)):
     await websocket.accept()
-    logger.info("New client connected to /ws/transcribe")
+    logger.info(f"New client connected as {role}")
     
-    worker = TranscriptionWorker(model, websocket)
-    worker.start()
-    
-    try:
-        while True:
-            # Expecting raw PCM 16-bit 16kHz mono audio
-            data = await websocket.receive_bytes()
-            # Convert to float32
-            audio_chunk = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-            worker.add_audio(audio_chunk)
-    except WebSocketDisconnect:
-        logger.info("Client disconnected")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        worker.stop()
+    if role == "viewer":
+        await session_manager.add_viewer(websocket)
         try:
-            await websocket.close()
-        except:
-            pass
+            while True:
+                # Keep connection open, wait for disconnect
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            await session_manager.remove_viewer(websocket)
+            logger.info("Viewer disconnected")
+    
+    elif role == "listener":
+        await session_manager.add_listener(websocket)
+        worker = TranscriptionWorker(model, websocket, session_manager)
+        worker.start()
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                audio_chunk = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                worker.add_audio(audio_chunk)
+        except WebSocketDisconnect:
+            await session_manager.remove_listener(websocket)
+            logger.info("Listener disconnected")
+        finally:
+            worker.stop()
+    else:
+        await websocket.close(code=4000, reason="Invalid role")
 
 if __name__ == "__main__":
     import uvicorn
