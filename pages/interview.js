@@ -65,6 +65,7 @@ import ScrollToBottom from 'react-scroll-to-bottom';
 
 // Local Imports
 import SettingsDialog from '../components/SettingsDialog';
+import StealthUI from '../components/StealthUI';
 import { setAIResponse } from '../redux/aiResponseSlice';
 import { addToHistory } from '../redux/historySlice';
 import { clearTranscription, setTranscription } from '../redux/transcriptionSlice';
@@ -85,6 +86,10 @@ function debounce(func, timeout = 100) {
 
 
 export default function InterviewPage() {
+  const router = useRouter();
+  const { role } = router.query;
+  const isStealth = role === 'listener';
+
   const dispatch = useDispatch();
   const transcriptionFromStore = useSelector(state => state.transcription);
   const aiResponseFromStore = useSelector(state => state.aiResponse);
@@ -103,6 +108,7 @@ export default function InterviewPage() {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState('info');
+  const [isStealthModeActive, setIsStealthModeActive] = useState(false);
   const [selectedQuestions, setSelectedQuestions] = useState([]);
   const [isManualMode, setIsManualMode] = useState(appConfig.isManualMode !== undefined ? appConfig.isManualMode : false);
   const [micTranscription, setMicTranscription] = useState('');
@@ -186,6 +192,71 @@ export default function InterviewPage() {
       }
     };
   }, [dispatch]);
+
+  useEffect(() => {
+    if (isStealth && !isStealthModeActive) {
+      console.log('Stealth Mode UI active.');
+      setIsStealthModeActive(true);
+    }
+  }, [isStealth, isStealthModeActive]);
+
+  // --- SESSION HUB CONNECTION (for all roles) ---
+  useEffect(() => {
+    const currentRole = role || 'candidate';
+    const currentConfig = getConfig();
+
+    // Only connect if using local backend or explicitly specified
+    if (!currentConfig.useLocalBackend && currentRole !== 'viewer') return;
+
+    let hubService = null;
+
+    const connectHub = async () => {
+      try {
+        console.log(`Connecting to session hub as ${currentRole}...`);
+        // We pass a dummy audioConfig because hubService won't start recording
+        hubService = new LocalTranscriptionService({ privStream: null }, currentRole);
+
+        hubService.onHistory = (historyData) => {
+          console.log("Received session history:", historyData);
+          if (historyData && historyData.length > 0) {
+            // Take the latest segment as the current transcription context
+            const lastSession = historyData[historyData.length - 1];
+            const fullText = lastSession.segments.map(s => s.text).join(' ').trim();
+            if (fullText) {
+              dispatch(setTranscription(fullText));
+              finalTranscript.current.system = fullText;
+            }
+          }
+        };
+
+        hubService.recognizing = (s, e) => {
+          if (e.result.text) {
+            systemInterimTranscription.current = e.result.text;
+            dispatch(setTranscription(finalTranscript.current.system + e.result.text));
+          }
+        };
+
+        hubService.recognized = (s, e) => {
+          if (e.result.text) {
+            systemInterimTranscription.current = '';
+            handleTranscriptionEvent(e.result.text, 'system');
+          }
+        };
+
+        await hubService.startContinuousRecognitionAsync().catch(err => {
+          console.warn("Hub connection failed (recordings will still work locally):", err);
+        });
+      } catch (err) {
+        console.error("Session hub error:", err);
+      }
+    };
+
+    connectHub();
+
+    return () => {
+      if (hubService) hubService.stopContinuousRecognitionAsync();
+    };
+  }, [role, dispatch]);
 
   const handleSnackbarClose = () => setSnackbarOpen(false);
 
@@ -330,7 +401,7 @@ export default function InterviewPage() {
       // LOCAL MODE
       // Patch the AudioConfig slightly to pass the stream to our custom class
       audioConfig.privStream = mediaStream;
-      recognizer = new LocalTranscriptionService(audioConfig);
+      recognizer = new LocalTranscriptionService(audioConfig, role || 'listener');
 
       // We need to inject the Azure SDK enums onto the class instance 
       // or ensure the class has static members that match what we check below.
@@ -897,6 +968,38 @@ export default function InterviewPage() {
     }
   }, [history, aiResponseFromStore, isPipWindowActive, aiResponseSortOrder, isProcessing]);
 
+  if (isStealth) {
+    return (
+      <Box sx={{ bgcolor: '#f5f5f5', minHeight: '100vh' }}>
+        <Head>
+          <title>System Documentation</title>
+        </Head>
+        <StealthUI
+          onStartMic={startMicrophoneRecognition}
+          onStartSystemAudio={startSystemAudioRecognition}
+          isMicActive={isMicrophoneActive}
+          isSystemActive={isSystemAudioActive}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+        <SettingsDialog
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          onSave={handleSettingsSaved}
+        />
+        <Snackbar
+          open={snackbarOpen}
+          autoHideDuration={4000}
+          onClose={handleSnackbarClose}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        >
+          <Alert onClose={handleSnackbarClose} severity={snackbarSeverity} sx={{ width: '100%', boxShadow: theme.shadows[6] }}>
+            {snackbarMessage}
+          </Alert>
+        </Snackbar>
+      </Box>
+    );
+  }
+
   return (
     <>
       <Head>
@@ -909,11 +1012,13 @@ export default function InterviewPage() {
             <Typography variant="h6" component="div" sx={{ flexGrow: 1, color: 'text.primary' }}>
               Interview Copilot
             </Typography>
-            <Tooltip title="Settings">
-              <IconButton color="primary" onClick={() => setSettingsOpen(true)} aria-label="settings">
-                <SettingsIcon />
-              </IconButton>
-            </Tooltip>
+            {role !== 'viewer' && (
+              <Tooltip title="Settings">
+                <IconButton color="primary" onClick={() => setSettingsOpen(true)} aria-label="settings">
+                  <SettingsIcon />
+                </IconButton>
+              </Tooltip>
+            )}
           </Toolbar>
         </AppBar>
 
@@ -924,50 +1029,62 @@ export default function InterviewPage() {
               <Card>
                 <CardHeader title="System Audio (Interviewer)" avatar={<HearingIcon />} sx={{ pb: 1 }} />
                 <CardContent>
-                  <FormControlLabel
-                    control={<Switch checked={systemAutoMode} onChange={e => setSystemAutoMode(e.target.checked)} color="primary" />}
-                    label="Auto-Submit Question"
-                    sx={{ mb: 1 }}
-                  />
-                  <TextField
-                    fullWidth
-                    multiline
-                    rows={3}
-                    variant="outlined"
-                    value={transcriptionFromStore}
-                    onChange={(e) => handleManualInputChange(e.target.value, 'system')}
-                    onKeyDown={(e) => handleKeyPress(e, 'system')}
-                    placeholder="Interviewer's speech..."
-                    sx={{ mb: 2 }}
-                  />
-                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    <Button
-                      onClick={startSystemAudioRecognition}
-                      variant="contained"
-                      color={isSystemAudioActive ? 'error' : 'primary'}
-                      startIcon={isSystemAudioActive ? <StopScreenShareIcon /> : <ScreenShareIcon />}
-                      sx={{ flexGrow: 1 }}
-                    >
-                      {isSystemAudioActive ? 'Stop System Audio' : 'Record System Audio'}
-                    </Button>
-                    <Typography variant="caption" sx={{ mt: 1, display: 'block', width: '100%' }}>
-                      {isSystemAudioActive ? 'Recording system audio...' : 'Select "Chrome Tab" and check "Share audio" when prompted.'}
-                    </Typography>
-                    <Tooltip title="Clear System Transcription">
-                      <IconButton onClick={handleClearSystemTranscription}><DeleteSweepIcon /></IconButton>
-                    </Tooltip>
-                    {!systemAutoMode && (
-                      <Button
-                        onClick={() => handleManualSubmit('system')}
+                  {role !== 'viewer' ? (
+                    <>
+                      <FormControlLabel
+                        control={<Switch checked={systemAutoMode} onChange={e => setSystemAutoMode(e.target.checked)} color="primary" />}
+                        label="Auto-Submit Question"
+                        sx={{ mb: 1 }}
+                      />
+                      <TextField
+                        fullWidth
+                        multiline
+                        rows={3}
                         variant="outlined"
-                        color="primary"
-                        startIcon={<SendIcon />}
-                        disabled={isProcessing || !transcriptionFromStore.trim()}
+                        value={transcriptionFromStore}
+                        onChange={(e) => handleManualInputChange(e.target.value, 'system')}
+                        onKeyDown={(e) => handleKeyPress(e, 'system')}
+                        placeholder="Interviewer's speech..."
+                        sx={{ mb: 2 }}
+                      />
+                    </>
+                  ) : (
+                    <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1, minHeight: 80, border: '1px solid #e0e0e0', overflowY: 'auto' }}>
+                      <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', color: transcriptionFromStore ? 'text.primary' : 'text.secondary' }}>
+                        {transcriptionFromStore || "Waiting for transcription..."}
+                      </Typography>
+                    </Box>
+                  )}
+                  {role !== 'viewer' && (
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                      <Button
+                        onClick={startSystemAudioRecognition}
+                        variant="contained"
+                        color={isSystemAudioActive ? 'error' : 'primary'}
+                        startIcon={isSystemAudioActive ? <StopScreenShareIcon /> : <ScreenShareIcon />}
+                        sx={{ flexGrow: 1 }}
                       >
-                        Submit
+                        {isSystemAudioActive ? 'Stop System Audio' : 'Record System Audio'}
                       </Button>
-                    )}
-                  </Box>
+                      <Typography variant="caption" sx={{ mt: 1, display: 'block', width: '100%' }}>
+                        {isSystemAudioActive ? 'Recording system audio...' : 'Select "Chrome Tab" and check "Share audio" when prompted.'}
+                      </Typography>
+                      <Tooltip title="Clear System Transcription">
+                        <IconButton onClick={handleClearSystemTranscription}><DeleteSweepIcon /></IconButton>
+                      </Tooltip>
+                      {!systemAutoMode && (
+                        <Button
+                          onClick={() => handleManualSubmit('system')}
+                          variant="outlined"
+                          color="primary"
+                          startIcon={<SendIcon />}
+                          disabled={isProcessing || !transcriptionFromStore.trim()}
+                        >
+                          Submit
+                        </Button>
+                      )}
+                    </Box>
+                  )}
                 </CardContent>
               </Card>
               <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
@@ -975,15 +1092,17 @@ export default function InterviewPage() {
                   title="Question History"
                   avatar={<PlaylistAddCheckIcon />}
                   action={
-                    <Button
-                      variant="contained"
-                      size="small"
-                      onClick={handleCombineAndSubmit}
-                      disabled={selectedQuestions.length === 0 || isProcessing}
-                      startIcon={isProcessing ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
-                    >
-                      Ask Combined
-                    </Button>
+                    role !== 'viewer' && (
+                      <Button
+                        variant="contained"
+                        size="small"
+                        onClick={handleCombineAndSubmit}
+                        disabled={selectedQuestions.length === 0 || isProcessing}
+                        startIcon={isProcessing ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
+                      >
+                        Ask Combined
+                      </Button>
+                    )
                   }
                   sx={{ pb: 1, borderBottom: `1px solid ${theme.palette.divider}` }}
                 />
@@ -1052,47 +1171,59 @@ export default function InterviewPage() {
               <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
                 <CardHeader title="Your Mic (Candidate)" avatar={<PersonIcon />} sx={{ pb: 1 }} />
                 <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-                  <FormControlLabel
-                    control={<Switch checked={isManualMode} onChange={e => setIsManualMode(e.target.checked)} color="primary" />}
-                    label="Manual Input Mode"
-                    sx={{ mb: 1 }}
-                  />
-                  <TextField
-                    fullWidth
-                    multiline
-                    rows={8}
-                    variant="outlined"
-                    value={micTranscription}
-                    onChange={(e) => handleManualInputChange(e.target.value, 'microphone')}
-                    onKeyDown={(e) => handleKeyPress(e, 'microphone')}
-                    placeholder="Your speech or manual input..."
-                    sx={{ mb: 2, flexGrow: 1 }}
-                  />
-                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 'auto' }}>
-                    <Button
-                      onClick={startMicrophoneRecognition}
-                      variant="contained"
-                      color={isMicrophoneActive ? 'error' : 'primary'}
-                      startIcon={isMicrophoneActive ? <MicOffIcon /> : <MicIcon />}
-                      sx={{ flexGrow: 1 }}
-                    >
-                      {isMicrophoneActive ? 'Stop Mic' : 'Start Mic'}
-                    </Button>
-                    <Tooltip title="Clear Your Transcription">
-                      <IconButton onClick={handleClearMicTranscription}><DeleteSweepIcon /></IconButton>
-                    </Tooltip>
-                    {isManualMode && (
-                      <Button
-                        onClick={() => handleManualSubmit('microphone')}
+                  {role !== 'viewer' ? (
+                    <>
+                      <FormControlLabel
+                        control={<Switch checked={isManualMode} onChange={e => setIsManualMode(e.target.checked)} color="primary" />}
+                        label="Manual Input Mode"
+                        sx={{ mb: 1 }}
+                      />
+                      <TextField
+                        fullWidth
+                        multiline
+                        rows={8}
                         variant="outlined"
-                        color="primary"
-                        startIcon={<SendIcon />}
-                        disabled={isProcessing || !micTranscription.trim()}
+                        value={micTranscription}
+                        onChange={(e) => handleManualInputChange(e.target.value, 'microphone')}
+                        onKeyDown={(e) => handleKeyPress(e, 'microphone')}
+                        placeholder="Your speech or manual input..."
+                        sx={{ mb: 2, flexGrow: 1 }}
+                      />
+                    </>
+                  ) : (
+                    <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1, minHeight: 200, border: '1px solid #e0e0e0', overflowY: 'auto', flexGrow: 1 }}>
+                      <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', color: micTranscription ? 'text.primary' : 'text.secondary' }}>
+                        {micTranscription || "Waiting for transcription..."}
+                      </Typography>
+                    </Box>
+                  )}
+                  {role !== 'viewer' && (
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 'auto' }}>
+                      <Button
+                        onClick={startMicrophoneRecognition}
+                        variant="contained"
+                        color={isMicrophoneActive ? 'error' : 'primary'}
+                        startIcon={isMicrophoneActive ? <MicOffIcon /> : <MicIcon />}
+                        sx={{ flexGrow: 1 }}
                       >
-                        Submit
+                        {isMicrophoneActive ? 'Stop Mic' : 'Start Mic'}
                       </Button>
-                    )}
-                  </Box>
+                      <Tooltip title="Clear Your Transcription">
+                        <IconButton onClick={handleClearMicTranscription}><DeleteSweepIcon /></IconButton>
+                      </Tooltip>
+                      {isManualMode && (
+                        <Button
+                          onClick={() => handleManualSubmit('microphone')}
+                          variant="outlined"
+                          color="primary"
+                          startIcon={<SendIcon />}
+                          disabled={isProcessing || !micTranscription.trim()}
+                        >
+                          Submit
+                        </Button>
+                      )}
+                    </Box>
+                  )}
                 </CardContent>
               </Card>
             </Grid>
