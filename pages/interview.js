@@ -69,6 +69,7 @@ import { setAIResponse } from '../redux/aiResponseSlice';
 import { addToHistory } from '../redux/historySlice';
 import { clearTranscription, setTranscription } from '../redux/transcriptionSlice';
 import { getConfig, setConfig as saveConfig } from '../utils/config';
+import { LocalTranscriptionService } from '../utils/transcription/LocalTranscriptionService';
 
 
 
@@ -302,7 +303,10 @@ export default function InterviewPage() {
 
   const createRecognizer = async (mediaStream, source) => {
     const currentConfig = getConfig();
-    if (!currentConfig.azureToken || !currentConfig.azureRegion) {
+    const useLocalBackend = currentConfig.useLocalBackend;
+
+    // Only check for Azure credentials if we are NOT using the local backend
+    if (!useLocalBackend && (!currentConfig.azureToken || !currentConfig.azureRegion)) {
       showSnackbar('Azure Speech credentials missing. Please set them in Settings.', 'error');
       mediaStream.getTracks().forEach(track => track.stop());
       return null;
@@ -318,13 +322,48 @@ export default function InterviewPage() {
       return null;
     }
 
-    const speechConfig = SpeechSDK.SpeechConfig.fromSubscription(currentConfig.azureToken, currentConfig.azureRegion);
-    speechConfig.speechRecognitionLanguage = currentConfig.azureLanguage;
+    // --- SELECTION LOGIC: AZURE vs LOCAL ---
+    // useLocalBackend is already defined at top of function
+    let recognizer;
 
-    const recognizer = new SpeechSDK.SpeechRecognizer(speechConfig, audioConfig);
+    if (useLocalBackend) {
+      // LOCAL MODE
+      // Patch the AudioConfig slightly to pass the stream to our custom class
+      audioConfig.privStream = mediaStream;
+      recognizer = new LocalTranscriptionService(audioConfig);
+
+      // We need to inject the Azure SDK enums onto the class instance 
+      // or ensure the class has static members that match what we check below.
+      // But actually, we only check e.result.reason against SpeechSDK.ResultReason enums.
+      // The LocalTranscriptionService event payloads MUST use SpeechSDK.ResultReason values
+      // if we want to avoid changing the check loops below.
+      // Let's modify the checks below to use the SDK enums OR the LocalService enums, or just trust exact string matching.
+      // Re-reading LocalTranscriptionService: it emits strings 'RecognizingSpeech', etc.
+      // SpeechSDK.ResultReason.RecognizingSpeech is actually an Enum/Number in some versions or String in JS SDK?
+      // In JS SDK, ResultReason.RecognizingSpeech is usually an Enum Value (3).
+      // WAIT: SpeechSDK is imported here. We should use SpeechSDK enums in our LocalService to be 100% safe!
+
+    } else {
+      // AZURE MODE
+      const speechConfig = SpeechSDK.SpeechConfig.fromSubscription(currentConfig.azureToken, currentConfig.azureRegion);
+      speechConfig.speechRecognitionLanguage = currentConfig.azureLanguage;
+      recognizer = new SpeechSDK.SpeechRecognizer(speechConfig, audioConfig);
+    }
+
+    // --- EVENT HANDLERS (Shared) ---
+    // The handlers below use SpeechSDK enums. We must ensure our LocalService emits compatible values.
+    // Hack: We will override the event checker in LocalService to emit real SpeechSDK enums if we have access,
+    // OR we modify the checks below to be loose.
+    // Cleaner: Let's modify the check below to be robust.
 
     recognizer.recognizing = (s, e) => {
-      if (e.result.reason === SpeechSDK.ResultReason.RecognizingSpeech) {
+      // LocalService emits object with { result: { reason: ..., text: ... } }
+      // Azure SDK emits object with { result: { reason: ..., text: ... } }
+      // We need to unify the "reason" check.
+
+      const isRecognizing = e.result.reason === SpeechSDK.ResultReason.RecognizingSpeech || e.result.reason === 'RecognizingSpeech';
+
+      if (isRecognizing) {
         const interimText = e.result.text;
         if (source === 'system') {
           systemInterimTranscription.current = interimText;
@@ -337,7 +376,8 @@ export default function InterviewPage() {
     };
 
     recognizer.recognized = (s, e) => {
-      if (e.result.reason === SpeechSDK.ResultReason.RecognizedSpeech && e.result.text) {
+      const isRecognized = e.result.reason === SpeechSDK.ResultReason.RecognizedSpeech || e.result.reason === 'RecognizedSpeech';
+      if (isRecognized && e.result.text) {
         if (source === 'system') systemInterimTranscription.current = '';
         else micInterimTranscription.current = '';
         handleTranscriptionEvent(e.result.text, source);
@@ -502,11 +542,18 @@ export default function InterviewPage() {
           generationConfig: { temperature, maxOutputTokens: maxTokens },
           systemInstruction: { parts: [{ text: currentConfig.gptSystemPrompt }] }
         });
+        let mappedHistory = conversationHistoryForAPI.map(msg => ({
+          role: msg.role === 'user' ? 'user' : 'model',
+          parts: [{ text: msg.content }]
+        }));
+
+        // Gemini API requires the first message in history (if present) to be from 'user'.
+        if (mappedHistory.length > 0 && mappedHistory[0].role === 'model') {
+          mappedHistory.shift();
+        }
+
         const chat = model.startChat({
-          history: conversationHistoryForAPI.map(msg => ({
-            role: msg.role === 'user' ? 'user' : 'model',
-            parts: [{ text: msg.content }]
-          })),
+          history: mappedHistory,
         });
         const result = await chat.sendMessageStream(text);
         for await (const chunk of result.stream) {
