@@ -25,6 +25,143 @@ An AI-powered interview assistant that provides real-time transcription and inte
   - **Build Tools**: npm
   - **Other Libraries**: React Markdown, Highlight.js, Microsoft Cognitive Services Speech SDK
 
+## System Architecture 🏗️
+
+### Sequence Diagrams
+
+#### 1. Application Initialization & AI Setup
+This diagram shows how the `InterviewPage` initializes and sets up the AI client based on configuration.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant InterviewPage
+    participant ConfigUtils
+    participant OpenAI_SDK
+    participant GoogleGenerativeAI_SDK
+
+    User->>InterviewPage: Opens /interview
+    InterviewPage->>ConfigUtils: getConfig()
+    ConfigUtils-->>InterviewPage: appConfig (API Keys, Models)
+    
+    InterviewPage->>InterviewPage: useEffect (Initialize AI)
+    
+    alt Model is Gemini
+        InterviewPage->>GoogleGenerativeAI_SDK: new GoogleGenerativeAI(apiKey)
+        GoogleGenerativeAI_SDK-->>InterviewPage: genAI Instance
+    else Model is OpenAI
+        InterviewPage->>OpenAI_SDK: new OpenAI({ apiKey })
+        OpenAI_SDK-->>InterviewPage: openaiClient Instance
+    end
+    
+    InterviewPage-->>User: Ready State
+```
+
+#### 2. Audio Transcription & AI Response Flow
+This diagram illustrates the core loop: Audio Capture -> Transcription -> Silence Detection -> AI Request.
+
+```mermaid
+sequenceDiagram
+    participant Speaker as Speaker (User/System)
+    participant SDK as Azure Speech SDK
+    participant Page as InterviewPage
+    participant Redux as Redux Store
+    participant AI as AI Service (OpenAI/Gemini)
+
+    Speaker->>SDK: Audio Input
+    activate SDK
+    SDK->>Page: recognizing (interim text)
+    Page->>Redux: setTranscription(interim)
+    SDK->>Page: recognized (final text)
+    deactivate SDK
+    
+    Page->>Redux: setTranscription(final)
+    Page->>Page: handleTranscriptionEvent()
+    
+    loop Silence Timer
+        Page->>Page: Reset & Start Timer
+    end
+    
+    Page->>Page: Timer Expires -> askOpenAI()
+    
+    Page->>Redux: addToHistory(question)
+    Page->>AI: Send Prompt (History + Question)
+    activate AI
+    
+    loop Stream Response
+        AI-->>Page: Chunk
+        Page->>Redux: setAIResponse(accumulated)
+    end
+    deactivate AI
+    
+    Page->>Redux: addToHistory(response)
+    Page->>Redux: setAIResponse(final)
+```
+
+### Flow Charts
+
+#### 3. Redux State Management
+Overview of how data flows through the Redux slices.
+
+```mermaid
+graph TD
+    subgraph Actions
+        A1[setTranscription]
+        A2[clearTranscription]
+        A3[setAIResponse]
+        A4[addToHistory]
+    end
+
+    subgraph Store
+        S1[(Transcription State)]
+        S2[(AI Response State)]
+        S3[(History State)]
+    end
+
+    subgraph Components
+        C1[InterviewPage]
+        C2[PiP Window]
+    end
+
+    A1 -->|Update| S1
+    A2 -->|Clear| S1
+    A3 -->|Update| S2
+    A4 -->|Append| S3
+
+    S1 -->|Selector| C1
+    S2 -->|Selector| C1
+    S2 -->|Selector| C2
+    S3 -->|Selector| C1
+    S3 -->|Selector| C2
+```
+
+#### 4. Picture-in-Picture (PiP) Window Communication
+How the main window synchronizes data with the PiP window.
+
+```mermaid
+sequenceDiagram
+    participant Main as InterviewPage
+    participant PiP as PiP Window (pip-log)
+
+    Main->>Main: Toggle PiP
+    Main->>PiP: window.open() / documentPictureInPicture.requestWindow()
+    activate PiP
+    
+    loop On State Change / Interval
+        Main->>PiP: postMessage({ type: 'AI_LOG_DATA', payload: { history, streamingText } })
+        PiP->>PiP: Render Update
+    end
+    
+    opt Resize
+        PiP->>PiP: Resize Event
+        PiP-->>Main: postMessage({ type: 'PIP_RESIZE' })
+    end
+    
+    User->>PiP: Close
+    deactivate PiP
+    PiP-->>Main: cleanup listeners
+```
+
 ## Getting Started 🚀
 
 ### Prerequisites
