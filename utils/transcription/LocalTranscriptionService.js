@@ -4,23 +4,17 @@
  * that connects to our local Python backend instead of Azure.
  */
 export class LocalTranscriptionService {
-    constructor(audioConfig) {
+    constructor(audioConfig, role = 'listener') {
         // Mimic the Azure SDK structure
         this.audioConfig = audioConfig; // We expect the helper to pass the stream here somehow
         this.privStream = audioConfig.privStream; // Custom hack to get stream if needed
+        this.role = role;
 
         // Azure SDK Callbacks
-        this.recognizing = null;      // (s, e) => void
         this.recognized = null;       // (s, e) => void
         this.canceled = null;         // (s, e) => void
-        this.sessionStopped = null;   // (s, e) => void
-
-        // Internal state
-        this.ws = null;
-        this.audioContext = null;
-        this.processor = null;
-        this.inputStream = null;
-        this.sampleRate = 16000;
+        this.onHistory = null;        // (history) => void
+        this.sampleRate = 16000;      // Whisper expects 16kHz
     }
 
     // Mimic Azure Enums for compatibility
@@ -44,7 +38,7 @@ export class LocalTranscriptionService {
         return new Promise(async (resolve, reject) => {
             try {
                 // 1. Setup WebSocket
-                this.ws = new WebSocket("ws://localhost:8000/ws/transcribe");
+                this.ws = new WebSocket(`ws://localhost:8000/ws/session?role=${this.role}`);
                 this.ws.binaryType = "arraybuffer";
 
                 this.ws.onopen = () => {
@@ -58,8 +52,12 @@ export class LocalTranscriptionService {
 
                 this.ws.onmessage = (event) => {
                     try {
-                        const data = JSON.parse(event.data);
-                        if (data.type === "transcription") {
+                        const data = typeof event.data === 'string' ? JSON.parse(event.data) : null;
+                        if (!data) return;
+
+                        if (data.type === "session_state") {
+                            if (this.onHistory) this.onHistory(data.history);
+                        } else if (data.type === "transcription") {
                             // Construct the event object that interview.js expects
                             const text = data.segments.map(s => s.text).join(" ").trim();
 
@@ -96,10 +94,10 @@ export class LocalTranscriptionService {
                 // use the stream from the passed audioConfig (we need to patch logic to pass it)
                 const mediaStream = this.privStream;
                 if (!mediaStream) {
-                    throw new Error("No media stream provided to LocalTranscriptionService");
+                    // This is a "Hub Only" connection (e.g. Viewer or Listener pre-init)
+                    // We don't start audio processing, but we keep the WS open for messages.
+                    return;
                 }
-
-                const AudioContext = window.AudioContext || window.webkitAudioContext;
                 this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
                 this.inputStream = this.audioContext.createMediaStreamSource(mediaStream);
 

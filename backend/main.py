@@ -60,7 +60,7 @@ class SessionManager:
 
     async def broadcast_update(self, segments: List[Dict], is_final: bool):
         message = {
-            "type": "transcription_update",
+            "type": "transcription",
             "segments": segments,
             "is_final": is_final
         }
@@ -72,16 +72,20 @@ class SessionManager:
                     "timestamp": asyncio.get_event_loop().time()
                 })
             
-            # Broadcast to all viewers
+            # Broadcast to ALL connected clients (viewers AND listeners)
+            all_clients = self.active_viewers.union(self.active_listeners)
             disconnected = []
-            for viewer in self.active_viewers:
+            for client in all_clients:
                 try:
-                    await viewer.send_json(message)
+                    await client.send_json(message)
                 except Exception:
-                    disconnected.append(viewer)
+                    disconnected.append(client)
             
-            for viewer in disconnected:
-                self.active_viewers.remove(viewer)
+            for client in disconnected:
+                if client in self.active_viewers:
+                    self.active_viewers.remove(client)
+                if client in self.active_listeners:
+                    self.active_listeners.remove(client)
 
 session_manager = SessionManager()
 
