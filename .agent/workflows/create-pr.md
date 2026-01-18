@@ -3,7 +3,7 @@ description: Finalize feature, validate, and create a Pull Request
 ---
 1. Environment Check
    - Check if WSL is available by running `wsl --status` or `wsl --list`.
-   - If successful, prepend `wsl` to all subsequent commands (e.g., `wsl npm run build`, `wsl gh pr create`).
+   - If successful, prepend `wsl -e` to all subsequent commands (e.g., `wsl -e npm run build`, `wsl -e gh pr create`).
 
 2. Quality Assurance
    - Run `npm run lint`

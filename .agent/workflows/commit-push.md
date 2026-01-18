@@ -3,7 +3,7 @@ description: Commit all changes, validate, and push to remote automatically
 ---
 1. Environment Check
    - Check if WSL is available by running `wsl --status` or `wsl --list`.
-   - If successful, prepend `wsl` to all subsequent commands (e.g., `wsl git add .`, `wsl npm run lint`).
+   - If successful, prepend `wsl -e` to all subsequent commands (e.g., `wsl -e git add .`, `wsl -e npm run lint`).
 
 2. Stage Changes
    - // turbo

@@ -3,7 +3,7 @@ description: Start a new feature development cycle
 ---
 1. Environment Check
    - Check if WSL is available by running `wsl --status` or `wsl --list`.
-   - If successful, prepend `wsl` to all subsequent commands (e.g., `wsl git status`).
+   - If successful, prepend `wsl -e` to all subsequent commands (e.g., `wsl -e git status`).
 
 2. Verify Clean State
    - Run `git status --porcelain`
