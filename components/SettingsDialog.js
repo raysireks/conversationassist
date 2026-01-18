@@ -22,7 +22,8 @@ import {
   RadioGroup,
   FormControlLabel,
   Radio,
-  Switch
+  Switch,
+  Alert
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import SaveIcon from '@mui/icons-material/Save';
@@ -36,10 +37,18 @@ export default function SettingsDialog({ open, onClose, onSave }) {
   const [newModelId, setNewModelId] = useState('');
   const [newModelType, setNewModelType] = useState('openai'); // 'openai' or 'gemini'
 
+  const [backendConfig, setBackendConfig] = useState(null);
+
   useEffect(() => {
     if (open) {
       setSettings(getConfig());
-      // Reset new model fields when dialog opens
+      // Fetch backend capabilities
+      const host = window.location.hostname || 'localhost';
+      fetch(`http://${host}:8000/config`)
+        .then(res => res.json())
+        .then(data => setBackendConfig(data))
+        .catch(err => console.error("Failed to fetch backend config:", err));
+
       setNewModelName('');
       setNewModelId('');
       setNewModelType('openai');
@@ -125,13 +134,41 @@ export default function SettingsDialog({ open, onClose, onSave }) {
       </DialogTitle>
       <DialogContent sx={{ pt: 2.5 }}>
         <Typography variant="h6" gutterBottom>API Keys</Typography>
+
+        {settings.useLocalBackend && (
+          <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
+            <Typography variant="body2">
+              <b>Local Backend Mode:</b> For security, it's recommended to set API keys in the <code>backend/.env</code> file on your host machine.
+            </Typography>
+            {backendConfig && (
+              <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
+                <Chip
+                  label="OpenAI"
+                  size="small"
+                  color={backendConfig.openai_available ? "success" : "default"}
+                  variant={backendConfig.openai_available ? "filled" : "outlined"}
+                />
+                <Chip
+                  label="Gemini"
+                  size="small"
+                  color={backendConfig.gemini_available ? "success" : "default"}
+                  variant={backendConfig.gemini_available ? "filled" : "outlined"}
+                />
+              </Box>
+            )}
+          </Alert>
+        )}
+
         <TextField
           fullWidth margin="dense" name="openaiKey" label="OpenAI API Key" type="password"
-          value={settings.openaiKey || ''} onChange={handleChange} helperText="Required for OpenAI models."
+          value={settings.openaiKey || ''} onChange={handleChange}
+          helperText={settings.useLocalBackend ? "Optional if set in backend/.env" : "Required for OpenAI models."}
         />
         <TextField
           fullWidth margin="dense" name="geminiKey" label="Gemini API Key" type="password"
-          value={settings.geminiKey || ''} onChange={handleChange} helperText="Required for Gemini models." sx={{ mt: 2 }}
+          value={settings.geminiKey || ''} onChange={handleChange}
+          helperText={settings.useLocalBackend ? "Optional if set in backend/.env" : "Required for Gemini models."}
+          sx={{ mt: 2 }}
         />
 
         <Divider sx={{ my: 3 }} />

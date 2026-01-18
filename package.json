@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 0.0.0.0",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "backend:dev": "cd backend && npm run dev:mac",
-    "backend:gpu": "cd backend && npm run start:gpu"
+    "backend:gpu": "cd backend && npm run start:gpu:turbo"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
