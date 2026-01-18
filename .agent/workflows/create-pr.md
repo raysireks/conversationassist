@@ -1,5 +1,5 @@
 ---
-description: Finalize feature, validate, and create a Pull Request
+description: Finalize feature, validate, and create a Pull Request automatically
 ---
 ## Non-Interactive Safety Rules
 - **NEVER** run commands that require a password (like `sudo`). If root access is needed, output command and ask USER to run it.
@@ -18,23 +18,28 @@ description: Finalize feature, validate, and create a Pull Request
 
 3. Visual Sanity Check
    - // turbo
-   - Run `npm run dev` (This will start the server in the background. Note the Command ID.)
+   - **Safeguard**: Start the dev server with a 5-minute auto-kill timer to prevent zombie processes.
+   - Run `wsl -e bash -c "npm run dev & PID=\\$!; (sleep 300 && kill \\$PID 2>/dev/null) &"`
    - Wait 10000ms (10 seconds) for the server to boot.
    - Use the `browser_subagent` to fail-safe check the app:
      - Task: "Navigate to http://localhost:3000. Verify the page loads without crashing. Return a success message if the title or key elements are visible."
-   - Terminate the `npm run dev` command using the `send_command_input` tool with `Terminate: true`.
+   - Attempt to terminate the `npm run dev` command using the `send_command_input` tool with `Terminate: true`. The auto-kill timer acts as a fallback.
 
 4. Commit Changes
-   - Run `git status` to see changes.
    - Run `git add .`
-   - Ask the user for a commit message.
-   - Run `git commit -m "<user-message>"`
+   - // turbo
+   - Run `git diff --cached --name-status` to see what changed.
+   - Generate a concise commit message based on the changed files (e.g., "Fix <issue> and improve <feature>").
+   - // turbo
+   - Run `git commit -m "<generated-message>"`
 
 5. Push and PR
    - Run `git branch --show-current` to get the branch name.
+   - // turbo
    - Run `git push origin <branch-name>`
    - Attempt to create PR with GitHub CLI:
-     - Run `gh pr create --fill` (This avoids opening an interactive editor).
+     - // turbo
+     - Run `gh pr create --fill`
      - If `gh` is not installed or fails, output: "Please visit the repository URL to create the Pull Request manually."
 
 6. Return to Base
