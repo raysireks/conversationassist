@@ -1,9 +1,14 @@
 ---
 description: Commit all changes, validate, and push to remote automatically
 ---
+## Non-Interactive Safety Rules
+- **NEVER** run commands that require a password (like `sudo`). If root access is needed, output command and ask USER to run it.
+- **ALWAYS** use `-y` or equivalent keys to bypass yes/no prompts.
+- **ALWAYS** use `wsl -e` if WSL is detected.
+
 1. Environment Check
-   - Check if WSL is available by running `wsl --status` or `wsl --list`.
-   - If successful, prepend `wsl -e` to all subsequent commands (e.g., `wsl -e git add .`, `wsl -e npm run lint`).
+   - Check if WSL is available.
+   - If successful, prepend `wsl -e` to all subsequent commands.
 
 2. Stage Changes
    - // turbo
