@@ -1,25 +1,29 @@
 ---
 description: Commit all changes, validate, and push to remote automatically
 ---
-1. Stage Changes
+1. Environment Check
+   - Check if WSL is available by running `wsl --status` or `wsl --list`.
+   - If successful, prepend `wsl` to all subsequent commands (e.g., `wsl git add .`, `wsl npm run lint`).
+
+2. Stage Changes
    - // turbo
    - Run `git add .`
 
-2. Commit
+3. Commit
    - // turbo
    - Run `git diff --cached --name-status` to see what changed.
    - Generate a concise commit message based on the changed files (e.g., "Update <summary of changes>").
    - // turbo
    - Run `git commit -m "<generated-message>"`
 
-3. Quality Assurance
+4. Quality Assurance
    - // turbo
    - Run `npm run lint`
    - // turbo
    - Run `npm run build`
    - If any command fails, STOP. Output: "Validation failed. Fix errors and try pushing again."
 
-4. Push to Remote
+5. Push to Remote
    - // turbo
    - Run `git branch --show-current` to get the branch name.
    - // turbo
