@@ -23,7 +23,10 @@ import {
   FormControlLabel,
   Radio,
   Switch,
-  Alert
+  Alert,
+  List,
+  ListItem,
+  ListItemText
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import SaveIcon from '@mui/icons-material/Save';
@@ -138,7 +141,7 @@ export default function SettingsDialog({ open, onClose, onSave }) {
         {settings.useLocalBackend && (
           <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
             <Typography variant="body2">
-              <b>Local Backend Mode:</b> For security, it's recommended to set API keys in the <code>backend/.env</code> file on your host machine.
+              <b>Local Backend Mode:</b> For security, it&apos;s recommended to set API keys in the <code>backend/.env</code> file on your host machine.
             </Typography>
             {backendConfig && (
               <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>

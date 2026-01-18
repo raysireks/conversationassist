@@ -68,7 +68,7 @@ export default function StealthUI({
                     <Divider sx={{ mb: 3 }} />
 
                     <Typography paragraph sx={{ color: '#24292f', fontSize: '1rem', lineHeight: 1.6 }}>
-                        Welcome to the internal system API documentation. This API allows you to programmatically access and manage your organization's resources.
+                        Welcome to the internal system API documentation. This API allows you to programmatically access and manage your organization&apos;s resources.
                         Please review the authentication section before making your first request.
                     </Typography>
 

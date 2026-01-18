@@ -111,13 +111,13 @@ export default function LandingPage() {
               color="secondary"
               size="large"
               endIcon={<ArrowForwardIcon />}
-              sx={{ 
-                padding: '12px 30px', 
+              sx={{
+                padding: '12px 30px',
                 fontSize: '1.1rem',
                 boxShadow: '0px 4px 15px rgba(0,0,0,0.2)',
                 '&:hover': {
-                    boxShadow: '0px 6px 20px rgba(0,0,0,0.25)',
-                    transform: 'translateY(-2px)'
+                  boxShadow: '0px 6px 20px rgba(0,0,0,0.25)',
+                  transform: 'translateY(-2px)'
                 }
               }}
             >
@@ -150,13 +150,13 @@ export default function LandingPage() {
         </Container>
       </Section>
 
-      <Section id="about" sx={{ backgroundColor: 'rgba(0,0,0,0.02)'}}>
+      <Section id="about" sx={{ backgroundColor: 'rgba(0,0,0,0.02)' }}>
         <Container maxWidth="md">
           <Typography variant="h4" component="h2" align="center" gutterBottom sx={{ mb: 4 }}>
             About the Tool
           </Typography>
           <Typography variant="h6" component="p" align="center" color="textSecondary" paragraph>
-            Interview Copilot is designed to be an indispensable assistant for technical interviews. Whether you're conducting interviews and need to capture key details, or you're a candidate wanting to review your performance, our tool provides the support you need.
+            Interview Copilot is designed to be an indispensable assistant for technical interviews. Whether you&apos;re conducting interviews and need to capture key details, or you&apos;re a candidate wanting to review your performance, our tool provides the support you need.
           </Typography>
           <Typography variant="h6" component="p" align="center" color="textSecondary" paragraph>
             Our mission is to make interviews more productive and insightful by leveraging the power of AI, allowing participants to focus on what truly matters: the skills, experience, and potential being discussed.
@@ -168,7 +168,7 @@ export default function LandingPage() {
         <Typography variant="body2">
           &copy; {new Date().getFullYear()} Interview Copilot. All rights reserved.
         </Typography>
-        <Typography variant="caption" display="block" sx={{ mt: 1}}>
+        <Typography variant="caption" display="block" sx={{ mt: 1 }}>
           Powered by AI for smarter interviews.
         </Typography>
       </Footer>
