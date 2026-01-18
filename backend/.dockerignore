@@ -1,0 +1,10 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+model-cache/
+.git/
+.gitignore
+Dockerfile
+package.json
+node_modules/

@@ -5,9 +5,14 @@
     "scripts": {
         "dev:mac": "source venv/bin/activate && python main.py",
         "dev:wsl": "source venv/bin/activate && python main.py",
+        "dev:base": "source venv/bin/activate && export WHISPER_MODEL=base && export WHISPER_CACHE=./model-cache && python main.py",
+        "dev:turbo": "source venv/bin/activate && export WHISPER_MODEL=large-v3-turbo && export WHISPER_CACHE=./model-cache && python main.py",
         "docker:build": "docker build -t transcription-backend .",
-        "docker:run": "docker run --gpus all -p 8000:8000 transcription-backend",
-        "start:gpu": "npm run docker:build && npm run docker:run",
+        "docker:run": "docker run --gpus all -p 8000:8000 -v $(pwd)/model-cache:/app/model-cache -e WHISPER_CACHE=/app/model-cache transcription-backend",
+        "docker:run:base": "docker run --gpus all -p 8000:8000 -v $(pwd)/model-cache:/app/model-cache -e WHISPER_CACHE=/app/model-cache -e WHISPER_MODEL=base transcription-backend",
+        "docker:run:turbo": "docker run --gpus all -p 8000:8000 -v $(pwd)/model-cache:/app/model-cache -e WHISPER_CACHE=/app/model-cache -e WHISPER_MODEL=large-v3-turbo transcription-backend",
+        "start:gpu:base": "mkdir -p model-cache && npm run docker:build && npm run docker:run:base",
+        "start:gpu:turbo": "mkdir -p model-cache && npm run docker:build && npm run docker:run:turbo",
         "setup": "python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
     },
     "author": "",

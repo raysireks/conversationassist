@@ -97,6 +97,11 @@ export default function InterviewPage() {
   const theme = useTheme();
 
   const [appConfig, setAppConfig] = useState(getConfig());
+  const [hasMounted, setHasMounted] = useState(false);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
 
   const [systemRecognizer, setSystemRecognizer] = useState(null);
   const [micRecognizer, setMicRecognizer] = useState(null);
@@ -123,6 +128,7 @@ export default function InterviewPage() {
   const documentPipIframeRef = useRef(null);
   const systemInterimTranscription = useRef('');
   const micInterimTranscription = useRef('');
+  const hubServiceRef = useRef(null);
   const silenceTimer = useRef(null);
   const finalTranscript = useRef({ system: '', microphone: '' });
   const isManualModeRef = useRef(isManualMode);
@@ -138,9 +144,28 @@ export default function InterviewPage() {
   const handleSettingsSaved = () => {
     const newConfig = getConfig();
     setAppConfig(newConfig);
-    setIsAILoading(true);
     setSystemAutoMode(newConfig.systemAutoMode !== undefined ? newConfig.systemAutoMode : true);
     setIsManualMode(newConfig.isManualMode !== undefined ? newConfig.isManualMode : false);
+
+    // Sync model change to backend if using local hub
+    if (newConfig.useLocalBackend && hubServiceRef.current && hubServiceRef.current.ws && hubServiceRef.current.ws.readyState === WebSocket.OPEN) {
+      hubServiceRef.current.ws.send(JSON.stringify({
+        type: 'change_model',
+        model: newConfig.aiModel
+      }));
+    }
+  };
+
+  const [aiEnabled, setAiEnabled] = useState(true);
+
+  const handleToggleAI = (enabled) => {
+    if (hubServiceRef.current && hubServiceRef.current.ws && hubServiceRef.current.ws.readyState === WebSocket.OPEN) {
+      hubServiceRef.current.ws.send(JSON.stringify({
+        type: 'toggle_ai',
+        enabled: enabled
+      }));
+    }
+    setAiEnabled(enabled);
   };
 
   useEffect(() => {
@@ -213,19 +238,47 @@ export default function InterviewPage() {
     const connectHub = async () => {
       try {
         console.log(`Connecting to session hub as ${currentRole}...`);
-        // We pass a dummy audioConfig because hubService won't start recording
-        hubService = new LocalTranscriptionService({ privStream: null }, currentRole);
+        const hubService = new LocalTranscriptionService({ privStream: null }, currentRole);
+        hubServiceRef.current = hubService;
 
         hubService.onHistory = (historyData) => {
-          console.log("Received session history:", historyData);
+          console.log("Received comprehensive session history:", historyData);
           if (historyData && historyData.length > 0) {
-            // Take the latest segment as the current transcription context
-            const lastSession = historyData[historyData.length - 1];
-            const fullText = lastSession.segments.map(s => s.text).join(' ').trim();
-            if (fullText) {
-              dispatch(setTranscription(fullText));
-              finalTranscript.current.system = fullText;
-            }
+            historyData.forEach(item => {
+              if (item.type === "transcription") {
+                const fullText = item.segments.map(s => s.text).join(' ').trim();
+                if (fullText) {
+                  dispatch(setTranscription(fullText));
+                  finalTranscript.current.system = fullText;
+                }
+              } else if (item.type === "ai_log") {
+                const historyItem = {
+                  type: item.role === 'user' ? 'question' : 'response',
+                  text: item.text,
+                  timestamp: item.timestamp || new Date().toLocaleTimeString(),
+                  status: 'completed'
+                };
+                dispatch(addToHistory(historyItem));
+              }
+            });
+          }
+          // Also set AI enabled state if provided in session state
+          if (hubService.lastState && hubService.lastState.ai_enabled !== undefined) {
+            setAiEnabled(hubService.lastState.ai_enabled);
+          }
+        };
+
+        hubService.onMessage = (data) => {
+          if (data.type === "ai_log" && currentRole === 'viewer') {
+            const historyItem = {
+              type: data.role === 'user' ? 'question' : 'response',
+              text: data.text,
+              timestamp: data.timestamp || new Date().toLocaleTimeString(),
+              status: 'completed'
+            };
+            dispatch(addToHistory(historyItem));
+          } else if (data.type === "ai_state") {
+            setAiEnabled(data.enabled);
           }
         };
 
@@ -319,6 +372,11 @@ export default function InterviewPage() {
     const currentSilenceTimerDuration = currentConfig.silenceTimerDuration;
 
     if ((source === 'system' && systemAutoModeRef.current) || (source === 'microphone' && !isManualModeRef.current)) {
+      // If using local backend, the BACKEND handles the auto-trigger on final segments
+      if (currentConfig.useLocalBackend) {
+        return;
+      }
+
       clearTimeout(silenceTimer.current);
       silenceTimer.current = setTimeout(() => {
         askOpenAI(finalTranscript.current[source].trim(), source);
@@ -598,6 +656,16 @@ export default function InterviewPage() {
     dispatch(addToHistory({ type: 'question', text, timestamp, source, status: 'pending' }));
     dispatch(setAIResponse(''));
 
+    // RELAY question to session hub
+    if (hubServiceRef.current && hubServiceRef.current.ws && hubServiceRef.current.ws.readyState === WebSocket.OPEN) {
+      hubServiceRef.current.ws.send(JSON.stringify({
+        type: 'ai_log',
+        text: text,
+        role: 'user',
+        timestamp: timestamp
+      }));
+    }
+
     try {
       const conversationHistoryForAPI = history
         .filter(e => e.text && (e.type === 'question' || e.type === 'response') && e.status !== 'pending')
@@ -664,6 +732,16 @@ export default function InterviewPage() {
 
       const finalTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       dispatch(addToHistory({ type: 'response', text: streamedResponse, timestamp: finalTimestamp, status: 'completed' }));
+
+      // RELAY to session hub so viewers see it
+      if (hubServiceRef.current && hubServiceRef.current.ws && hubServiceRef.current.ws.readyState === WebSocket.OPEN) {
+        hubServiceRef.current.ws.send(JSON.stringify({
+          type: 'ai_log',
+          text: streamedResponse,
+          role: 'assistant',
+          timestamp: finalTimestamp
+        }));
+      }
 
     } catch (error) {
       console.error("AI request error:", error);
@@ -968,6 +1046,8 @@ export default function InterviewPage() {
     }
   }, [history, aiResponseFromStore, isPipWindowActive, aiResponseSortOrder, isProcessing]);
 
+  if (!hasMounted) return null;
+
   if (isStealth) {
     return (
       <Box sx={{ bgcolor: '#f5f5f5', minHeight: '100vh' }}>
@@ -1012,6 +1092,23 @@ export default function InterviewPage() {
             <Typography variant="h6" component="div" sx={{ flexGrow: 1, color: 'text.primary' }}>
               Interview Copilot
             </Typography>
+
+            {appConfig.useLocalBackend && (
+              <Box sx={{ display: 'flex', alignItems: 'center', mr: 2 }}>
+                <Typography variant="body2" sx={{ mr: 1, color: aiEnabled ? 'primary.main' : 'text.secondary', fontWeight: 'bold', display: { xs: 'none', sm: 'block' } }}>
+                  Brain {aiEnabled ? 'Active' : 'Offline'}
+                </Typography>
+                <Tooltip title={aiEnabled ? "Deactivate AI Brain" : "Activate AI Brain"}>
+                  <Switch
+                    checked={aiEnabled}
+                    onChange={(e) => handleToggleAI(e.target.checked)}
+                    color="primary"
+                    size="small"
+                  />
+                </Tooltip>
+              </Box>
+            )}
+
             {role !== 'viewer' && (
               <Tooltip title="Settings">
                 <IconButton color="primary" onClick={() => setSettingsOpen(true)} aria-label="settings">

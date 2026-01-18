@@ -38,7 +38,8 @@ export class LocalTranscriptionService {
         return new Promise(async (resolve, reject) => {
             try {
                 // 1. Setup WebSocket
-                this.ws = new WebSocket(`ws://localhost:8000/ws/session?role=${this.role}`);
+                const host = window.location.hostname || 'localhost';
+                this.ws = new WebSocket(`ws://${host}:8000/ws/session?role=${this.role}`);
                 this.ws.binaryType = "arraybuffer";
 
                 this.ws.onopen = () => {
@@ -56,6 +57,7 @@ export class LocalTranscriptionService {
                         if (!data) return;
 
                         if (data.type === "session_state") {
+                            this.lastState = data;
                             if (this.onHistory) this.onHistory(data.history);
                         } else if (data.type === "transcription") {
                             // Construct the event object that interview.js expects
@@ -80,6 +82,9 @@ export class LocalTranscriptionService {
                             } else {
                                 if (this.recognizing) this.recognizing(this, eventPayload);
                             }
+                        } else {
+                            // Relay other message types (like ai_log)
+                            if (this.onMessage) this.onMessage(data);
                         }
                     } catch (e) {
                         console.error("Local backend parse error:", e);
