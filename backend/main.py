@@ -75,6 +75,11 @@ async def get_backend_config():
         "device": DEVICE
     }
 
+# ... imports ...
+from semantic_segmenter import SemanticSegmenter
+
+# ... existing code ...
+
 class SessionManager:
     def __init__(self):
         self.active_viewers: Set[WebSocket] = set()
@@ -87,10 +92,28 @@ class SessionManager:
         self.ai_model = os.getenv("DEFAULT_AI_MODEL", "gpt-4o-mini")
         self.system_prompt = "You are a helpful interview assistant. Provide concise feedback based on the conversation."
 
+        # Initialize Semantic Segmenter
+        try:
+            self.segmenter = SemanticSegmenter()
+        except Exception as e:
+            logger.error(f"Failed to load Segmenter (likely missing dependencies): {e}")
+            self.segmenter = None
+
+    async def handle_force_segment(self):
+        if self.segmenter:
+            decision = self.segmenter.manual_segment_trigger()
+            if decision:
+                logger.info(f"Manual Force Segment Triggered: {decision}")
+                await self.broadcast({
+                    "type": "transcription", 
+                    "segments": [], 
+                    "is_final": True,
+                    "thought_segment": decision
+                })
+
     async def add_viewer(self, websocket: WebSocket):
         async with self.lock:
             self.active_viewers.add(websocket)
-            # Send current state to the new viewer
             await websocket.send_json({
                 "type": "session_state",
                 "history": self.history,
@@ -111,9 +134,7 @@ class SessionManager:
         if not self.ai_enabled:
             return
 
-        # 1. Build context from history
         messages = [{"role": "system", "content": self.system_prompt}]
-        # Filter for relevant history
         for item in self.history[-6:]:
             if item.get("type") == "ai_log":
                 role = "assistant" if item["role"] == "assistant" else "user"
@@ -127,20 +148,17 @@ class SessionManager:
         try:
             response_text = ""
             if "gemini" in self.ai_model.lower() and GEMINI_API_KEY:
-                # Gemini Logic
                 model = genai.GenerativeModel(self.ai_model)
-                # Convert to Gemini format
                 contents = []
                 for m in messages:
                     role = "user" if m["role"] == "user" else "model"
-                    if m["role"] == "system": continue # Gemini handles system via init
+                    if m["role"] == "system": continue 
                     contents.append({"role": role, "parts": [{"text": m["content"]}]})
                 
                 response = await asyncio.to_thread(model.generate_content, contents)
                 response_text = response.text
                 
             elif OPENAI_API_KEY:
-                # OpenAI Logic
                 client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
                 response = await client.chat.completions.create(
                     model=self.ai_model,
@@ -155,7 +173,7 @@ class SessionManager:
                     "text": response_text,
                     "role": "assistant"
                 }, save_to_history=True)
-                
+
         except Exception as e:
             logger.error(f"AI Service Error: {e}")
             await self.broadcast({
@@ -170,7 +188,6 @@ class SessionManager:
     async def add_listener(self, websocket: WebSocket):
         async with self.lock:
             self.active_listeners.add(websocket)
-            # Send current history so even the listener is in sync
             await websocket.send_json({
                 "type": "session_state",
                 "history": self.history
@@ -188,7 +205,6 @@ class SessionManager:
                     "timestamp": asyncio.get_event_loop().time()
                 })
             
-            # Broadcast to ALL connected clients (viewers AND listeners)
             all_clients = self.active_viewers.union(self.active_listeners)
             disconnected = []
             for client in all_clients:
@@ -204,18 +220,28 @@ class SessionManager:
                     self.active_listeners.remove(client)
 
     async def broadcast_update(self, segments: List[Dict], is_final: bool):
-        # Compatibility wrapper for existing worker code
-        await self.broadcast({
+        # 1. Process Semantic Segmentation (Integrated)
+        thought_payload = None
+        if self.segmenter and is_final:
+            full_text = " ".join([s["text"] for s in segments])
+            thought_payload = self.segmenter.process(full_text)
+
+        # 2. Prepare Message
+        message = {
             "type": "transcription",
             "segments": segments,
             "is_final": is_final
-        }, save_to_history=is_final)
+        }
         
-        # Auto-trigger AI if it's a final sentence
+        if thought_payload:
+            message["thought_segment"] = thought_payload
+
+        await self.broadcast(message, save_to_history=is_final)
+        
+        # 3. Auto-trigger AI if it's a final sentence
         if is_final:
             full_text = " ".join([s["text"] for s in segments])
             if full_text.strip():
-                # We fire and forget the AI call to avoid blocking the broadcast
                 asyncio.create_task(self.call_ai(full_text))
 
 session_manager = SessionManager()
@@ -310,7 +336,7 @@ class TranscriptionWorker:
                     if results:
                         # 5. Faster Finalization: 0.8s of silence is usually a safe break point
                         silence_duration = total_duration - last_segment_end
-                        if silence_duration > 0.8: 
+                        if silence_duration > 1.2: 
                             is_final = True
                             should_clear_buffer = True
                     else:
@@ -351,6 +377,8 @@ async def session_websocket(websocket: WebSocket, role: str = Query(...)):
                             await session_manager.toggle_ai(data["enabled"])
                         elif data.get("type") == "change_model":
                             session_manager.ai_model = data["model"]
+                        elif data.get("type") == "force_segment":
+                            await session_manager.handle_force_segment()
                         else:
                             await session_manager.broadcast(data, save_to_history=True)
                     except json.JSONDecodeError:
@@ -377,6 +405,8 @@ async def session_websocket(websocket: WebSocket, role: str = Query(...)):
                             await session_manager.toggle_ai(data["enabled"])
                         elif data.get("type") == "change_model":
                             session_manager.ai_model = data["model"]
+                        elif data.get("type") == "force_segment":
+                            await session_manager.handle_force_segment()
                         else:
                             # Relay other state updates to all viewers
                             await session_manager.broadcast(data, save_to_history=True)

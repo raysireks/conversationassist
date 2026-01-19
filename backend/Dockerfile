@@ -1,5 +1,5 @@
-# Use NVIDIA CUDA base image for GPU support
-FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
+# Use PyTorch base image (includes Torch + CUDA) to avoid massive downloads
+FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
 
 # Set working directory
 WORKDIR /app
@@ -15,7 +15,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Install Python packages
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Upgrade pip first to avoid dependency resolution errors
+RUN pip3 install --upgrade pip
+
+RUN pip3 install --default-timeout=1000 --retries=20 -r requirements.txt
 
 # Copy application code
 COPY . .

@@ -14,6 +14,7 @@ export class LocalTranscriptionService {
         this.recognized = null;       // (s, e) => void
         this.canceled = null;         // (s, e) => void
         this.onHistory = null;        // (history) => void
+        this.onThoughtSegment = null; // (data) => void { action, text, ... }
         this.sampleRate = 16000;      // Whisper expects 16kHz
     }
 
@@ -59,29 +60,37 @@ export class LocalTranscriptionService {
                         if (data.type === "session_state") {
                             this.lastState = data;
                             if (this.onHistory) this.onHistory(data.history);
-                        } else if (data.type === "transcription") {
-                            // Construct the event object that interview.js expects
+                        } else if (data.type === "transcription_update" || data.type === "transcription") {
+                            // Support both old and new event types
+
+                            // 1. Handle Transcriptions (Interviewer Box)
                             const text = data.segments.map(s => s.text).join(" ").trim();
 
-                            if (!text) return;
+                            if (text) {
+                                const reason = data.is_final
+                                    ? LocalTranscriptionService.ResultReason.RecognizedSpeech
+                                    : LocalTranscriptionService.ResultReason.RecognizingSpeech;
 
-                            const reason = data.is_final
-                                ? LocalTranscriptionService.ResultReason.RecognizedSpeech
-                                : LocalTranscriptionService.ResultReason.RecognizingSpeech;
+                                const eventPayload = {
+                                    result: {
+                                        reason: reason,
+                                        text: text,
+                                    }
+                                };
 
-                            const eventPayload = {
-                                result: {
-                                    reason: reason,
-                                    text: text,
+                                if (data.is_final) {
+                                    if (this.recognized) this.recognized(this, eventPayload);
+                                } else {
+                                    if (this.recognizing) this.recognizing(this, eventPayload);
                                 }
-                            };
-
-                            // Trigger appropriate callback
-                            if (data.is_final) {
-                                if (this.recognized) this.recognized(this, eventPayload);
-                            } else {
-                                if (this.recognizing) this.recognizing(this, eventPayload);
                             }
+
+                            // 2. Handle Semantic Segmentation (Thought Cards)
+                            // Pass the raw 'thought_segment' object to the UI
+                            if (data.thought_segment && this.onThoughtSegment) {
+                                this.onThoughtSegment(data.thought_segment);
+                            }
+
                         } else {
                             // Relay other message types (like ai_log)
                             if (this.onMessage) this.onMessage(data);

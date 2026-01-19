@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import Head from 'next/head';
 import { useRouter } from 'next/router';
@@ -71,6 +71,10 @@ import { addToHistory } from '../redux/historySlice';
 import { clearTranscription, setTranscription } from '../redux/transcriptionSlice';
 import { getConfig, setConfig as saveConfig } from '../utils/config';
 import { LocalTranscriptionService } from '../utils/transcription/LocalTranscriptionService';
+import { thoughtManager } from '../utils/ThoughtManager';
+import ConversationCards from '../components/ConversationCards';
+import ThoughtProcess from '../components/ThoughtProcess';
+import ContextPanel from '../components/ContextPanel';
 
 
 
@@ -119,9 +123,12 @@ export default function InterviewPage() {
   const [micTranscription, setMicTranscription] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAILoading, setIsAILoading] = useState(true);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [aiResponseSortOrder, setAiResponseSortOrder] = useState('newestAtTop');
-  const [isPipWindowActive, setIsPipWindowActive] = useState(false);
+
+  // New State for ThoughtManager UI
+  const [conversationHistory, setConversationHistory] = useState([]);
+  const [activeThought, setActiveThought] = useState('');
+  const [thoughtStatus, setThoughtStatus] = useState('idle'); // idle, forming, finalizing
+  const [contextKeywords, setContextKeywords] = useState([]);
 
   const pipWindowRef = useRef(null);
   const documentPipWindowRef = useRef(null);
@@ -129,8 +136,22 @@ export default function InterviewPage() {
   const systemInterimTranscription = useRef('');
   const micInterimTranscription = useRef('');
   const hubServiceRef = useRef(null);
-  const silenceTimer = useRef(null);
+  // const silenceTimer = useRef(null); // Removed in favor of ThoughtManager
   const finalTranscript = useRef({ system: '', microphone: '' });
+
+  // Real-time Thought Display Logic
+  // We combine the 'activeThought' (confirmed by backend) with 'systemInterimTranscription' (streaming)
+  // to give immediate feedback.
+  const displayThought = useMemo(() => {
+    const interim = systemInterimTranscription.current ? systemInterimTranscription.current.trim() : '';
+    if (thoughtStatus === 'forming' && interim) {
+      // Avoid duplicating if interim is already part of active (simple check)
+      if (activeThought.endsWith(interim)) return activeThought;
+      return `${activeThought} ${interim}`.trim();
+    }
+    return activeThought;
+  }, [activeThought, thoughtStatus, systemInterimTranscription.current]); // access ref.current in render is risky, but we force re-render via recognizing event
+
   const isManualModeRef = useRef(isManualMode);
   const systemAutoModeRef = useRef(systemAutoMode);
   const throttledDispatchSetAIResponseRef = useRef(null);
@@ -167,6 +188,13 @@ export default function InterviewPage() {
     }
     setAiEnabled(enabled);
   };
+
+  const handleForceFinalize = useCallback(() => {
+    if (hubServiceRef.current && hubServiceRef.current.ws && hubServiceRef.current.ws.readyState === WebSocket.OPEN) {
+      console.log("Triggering manual thought segmentation...");
+      hubServiceRef.current.ws.send(JSON.stringify({ type: 'force_segment' }));
+    }
+  }, []);
 
   useEffect(() => {
     const currentConfig = appConfig;
@@ -207,6 +235,57 @@ export default function InterviewPage() {
   useEffect(() => { systemAutoModeRef.current = systemAutoMode; }, [systemAutoMode]);
 
   useEffect(() => {
+    // Thought Manager Event Listeners
+    const handleThoughtUpdate = (data) => {
+      setActiveThought(data.text);
+      setThoughtStatus('forming');
+    };
+
+    const handleClassification = (data) => {
+      if (data.type === 'FINAL') {
+        setThoughtStatus('finalizing');
+      }
+    };
+
+    const handleFinalThought = (data) => {
+      const newItem = {
+        type: data.type,
+        text: data.text,
+        summary: data.summary,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setConversationHistory(prev => [...prev, newItem]);
+      setActiveThought('');
+      setThoughtStatus('idle');
+
+      // Clear the main transcription store to reset the "Interviewer Box"
+      dispatch(clearTranscription());
+
+      // Also reset the transient refs so they don't immediately re-populate
+      if (finalTranscript.current) {
+        finalTranscript.current.system = '';
+      }
+      systemInterimTranscription.current = '';
+    };
+
+    const handleContextUpdate = (data) => {
+      setContextKeywords(data.keywords);
+    };
+
+    thoughtManager.on('thoughtUpdate', handleThoughtUpdate);
+    thoughtManager.on('classification', handleClassification);
+    thoughtManager.on('finalThought', handleFinalThought);
+    thoughtManager.on('contextUpdate', handleContextUpdate);
+
+    return () => {
+      thoughtManager.off('thoughtUpdate', handleThoughtUpdate);
+      thoughtManager.off('classification', handleClassification);
+      thoughtManager.off('finalThought', handleFinalThought);
+      thoughtManager.off('contextUpdate', handleContextUpdate);
+    };
+  }, []);
+
+  useEffect(() => {
     throttledDispatchSetAIResponseRef.current = throttle((payload) => {
       dispatch(setAIResponse(payload));
     }, 250, { leading: true, trailing: true });
@@ -240,6 +319,11 @@ export default function InterviewPage() {
         console.log(`Connecting to session hub as ${currentRole}...`);
         const hubService = new LocalTranscriptionService({ privStream: null }, currentRole);
         hubServiceRef.current = hubService;
+
+        hubService.onThoughtSegment = (data) => {
+          // Pass backend thoughts directly to manager
+          thoughtManager.handleBackendEvent(data);
+        };
 
         hubService.onHistory = (historyData) => {
           console.log("Received comprehensive session history:", historyData);
@@ -372,15 +456,26 @@ export default function InterviewPage() {
     const currentSilenceTimerDuration = currentConfig.silenceTimerDuration;
 
     if ((source === 'system' && systemAutoModeRef.current) || (source === 'microphone' && !isManualModeRef.current)) {
-      // If using local backend, the BACKEND handles the auto-trigger on final segments
-      if (currentConfig.useLocalBackend) {
-        return;
+      if (source === 'system') { // NEW: Explicit check for system source to handle interim display
+        if (text) {
+          // If we are getting text, we trigger re-render to update the 'displayThought'
+          // which uses systemInterimTranscription.current
+          setThoughtStatus(prev => prev);
+        }
       }
 
-      clearTimeout(silenceTimer.current);
-      silenceTimer.current = setTimeout(() => {
-        askOpenAI(finalTranscript.current[source].trim(), source);
-      }, currentSilenceTimerDuration * 1000);
+      // If using local backend, the BACKEND handles the auto-trigger on final segments (legacy behavior)
+      // But now we want to intercept for ThoughtManager logic if we are doing frontend-driven logic.
+      // For now, let's assume we feed into ThoughtManager on every update.
+
+      // Feed ThoughtManager
+      // Note: 'text' here acts as a "chunk" or "segment". 
+      // construct "isFinal" based on source if strictly needed, or just let ThoughtManager accumulate.
+      // Since `handleTranscriptionEvent` is called when `recognized` (final segment), we say isFinal=true for this segment.
+
+      // thoughtManager.processInput(cleanText, true); // DISABLED: Using backend Semantic Segmentation now.
+
+      // Legacy direct OpenAI call removed.
     }
   };
 
@@ -1020,31 +1115,7 @@ export default function InterviewPage() {
     };
   }, []);
 
-  useEffect(() => {
-    let targetWindowForMessage = null;
 
-    if (documentPipWindowRef.current && documentPipIframeRef.current && documentPipIframeRef.current.contentWindow) {
-      targetWindowForMessage = documentPipIframeRef.current.contentWindow;
-    } else if (pipWindowRef.current && !pipWindowRef.current.closed) {
-      targetWindowForMessage = pipWindowRef.current;
-    }
-
-    if (isPipWindowActive && targetWindowForMessage) {
-      try {
-        targetWindowForMessage.postMessage({
-          type: 'AI_LOG_DATA',
-          payload: {
-            historicalResponses: history.filter(item => item.type === 'response'),
-            currentStreamingText: isProcessing ? aiResponseFromStore : '',
-            isProcessing: isProcessing,
-            sortOrder: aiResponseSortOrder
-          }
-        }, '*');
-      } catch (e) {
-        console.warn("Could not post message to PiP window:", e);
-      }
-    }
-  }, [history, aiResponseFromStore, isPipWindowActive, aiResponseSortOrder, isProcessing]);
 
   if (!hasMounted) return null;
 
@@ -1079,6 +1150,9 @@ export default function InterviewPage() {
       </Box>
     );
   }
+
+
+
 
   return (
     <>
@@ -1119,213 +1193,196 @@ export default function InterviewPage() {
           </Toolbar>
         </AppBar>
 
-        <Container maxWidth="xl" sx={{ flexGrow: 1, py: 2, display: 'flex', flexDirection: 'column' }}>
-          <Grid container spacing={2} sx={{ flexGrow: 1 }}>
-            {/* Left Panel */}
-            <Grid item xs={12} md={3} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <Card>
-                <CardHeader title="System Audio (Interviewer)" avatar={<HearingIcon />} sx={{ pb: 1 }} />
-                <CardContent>
-                  {role !== 'viewer' ? (
-                    <>
-                      <FormControlLabel
-                        control={<Switch checked={systemAutoMode} onChange={e => setSystemAutoMode(e.target.checked)} color="primary" />}
-                        label="Auto-Submit Question"
-                        sx={{ mb: 1 }}
-                      />
-                      <TextField
-                        fullWidth
-                        multiline
-                        rows={3}
-                        variant="outlined"
-                        value={transcriptionFromStore}
-                        onChange={(e) => handleManualInputChange(e.target.value, 'system')}
-                        onKeyDown={(e) => handleKeyPress(e, 'system')}
-                        placeholder="Interviewer's speech..."
-                        sx={{ mb: 2 }}
-                      />
-                    </>
-                  ) : (
-                    <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1, minHeight: 80, border: '1px solid #e0e0e0', overflowY: 'auto' }}>
-                      <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', color: transcriptionFromStore ? 'text.primary' : 'text.secondary' }}>
-                        {transcriptionFromStore || "Waiting for transcription..."}
-                      </Typography>
-                    </Box>
-                  )}
-                  {role !== 'viewer' && (
-                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                      <Button
-                        onClick={startSystemAudioRecognition}
-                        variant="contained"
-                        color={isSystemAudioActive ? 'error' : 'primary'}
-                        startIcon={isSystemAudioActive ? <StopScreenShareIcon /> : <ScreenShareIcon />}
-                        sx={{ flexGrow: 1 }}
-                      >
-                        {isSystemAudioActive ? 'Stop System Audio' : 'Record System Audio'}
-                      </Button>
-                      <Typography variant="caption" sx={{ mt: 1, display: 'block', width: '100%' }}>
-                        {isSystemAudioActive ? 'Recording system audio...' : 'Select "Chrome Tab" and check "Share audio" when prompted.'}
-                      </Typography>
-                      <Tooltip title="Clear System Transcription">
-                        <IconButton onClick={handleClearSystemTranscription}><DeleteSweepIcon /></IconButton>
-                      </Tooltip>
-                      {!systemAutoMode && (
-                        <Button
-                          onClick={() => handleManualSubmit('system')}
-                          variant="outlined"
-                          color="primary"
-                          startIcon={<SendIcon />}
-                          disabled={isProcessing || !transcriptionFromStore.trim()}
-                        >
-                          Submit
-                        </Button>
-                      )}
-                    </Box>
-                  )}
-                </CardContent>
-              </Card>
-              <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-                <CardHeader
-                  title="Question History"
-                  avatar={<PlaylistAddCheckIcon />}
-                  action={
-                    role !== 'viewer' && (
-                      <Button
-                        variant="contained"
-                        size="small"
-                        onClick={handleCombineAndSubmit}
-                        disabled={selectedQuestions.length === 0 || isProcessing}
-                        startIcon={isProcessing ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
-                      >
-                        Ask Combined
-                      </Button>
-                    )
-                  }
-                  sx={{ pb: 1, borderBottom: `1px solid ${theme.palette.divider}` }}
-                />
-                <CardContent sx={{ flexGrow: 1, overflow: 'hidden', p: 0 }}>
-                  <ScrollToBottom className="scroll-to-bottom" followButtonClassName="hidden-follow-button">
-                    <List dense sx={{ pt: 0, px: 1 }}>
-                      {history.filter(e => e.type === 'question').slice().reverse().map(renderQuestionHistoryItem)}
-                    </List>
-                  </ScrollToBottom>
-                </CardContent>
-              </Card>
-            </Grid>
+        <Box sx={{ display: 'flex', flexGrow: 1, overflow: 'hidden' }}>
+          {/* NEW Left Sidebar for Context */}
+          <Box sx={{
+            width: 250,
+            borderRight: `1px solid ${theme.palette.divider}`,
+            bgcolor: 'background.paper',
+            display: { xs: 'none', md: 'flex' },
+            flexDirection: 'column',
+            p: 2,
+            overflowY: 'auto'
+          }}>
+            <ContextPanel keywords={contextKeywords} />
+          </Box>
 
-            {/* Center Panel */}
-            <Grid item xs={12} md={6} sx={{ display: 'flex', flexDirection: 'column' }}>
-              <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-                <CardHeader
-                  title="AI Assistant Log"
-                  avatar={<SmartToyIcon />}
-                  action={
-                    <>
-                      <Tooltip title={isPipWindowActive ? "Close PiP Log" : "Open PiP Log"}>
-                        <IconButton onClick={togglePipWindow} size="small" color={isPipWindowActive ? "secondary" : "default"}>
-                          <PictureInPictureAltIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title={aiResponseSortOrder === 'newestAtTop' ? "Sort: Newest at Bottom" : "Sort: Newest on Top"}>
-                        <IconButton onClick={handleSortOrderToggle} size="small">
-                          {aiResponseSortOrder === 'newestAtTop' ? <ArrowDownwardIcon /> : <ArrowUpwardIcon />}
-                        </IconButton>
-                      </Tooltip>
-                      <Typography variant="caption" sx={{ mr: 1, fontStyle: 'italic' }}>
-                        {aiResponseSortOrder === 'newestAtTop' ? "Newest First" : "Oldest First"}
-                      </Typography>
-                      <FormControlLabel
-                        control={<Switch checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} color="primary" />}
-                        label="Auto Scroll"
-                        sx={{ ml: 1 }}
-                      />
-                    </>
-                  }
-                  sx={{ borderBottom: `1px solid ${theme.palette.divider}` }}
-                />
-                <CardContent sx={{ flexGrow: 1, overflow: 'hidden', p: 0 }}>
-                  <ScrollToBottom
-                    className="scroll-to-bottom"
-                    mode={autoScroll ? (aiResponseSortOrder === 'newestAtTop' ? "top" : "bottom") : undefined}
-                    followButtonClassName="hidden-follow-button"
-                  >
-                    <List sx={{ px: 2, py: 1 }}>
-                      {getAiResponsesToDisplay().map(renderHistoryItem)}
-                      {isProcessing && (
-                        <ListItem sx={{ justifyContent: 'center', py: 2 }}>
-                          <CircularProgress size={24} />
-                          <Typography variant="caption" sx={{ ml: 1 }}>AI is thinking...</Typography>
-                        </ListItem>
-                      )}
-                    </List>
-                  </ScrollToBottom>
-                </CardContent>
-              </Card>
-            </Grid>
-
-            {/* Right Panel */}
-            <Grid item xs={12} md={3} sx={{ display: 'flex', flexDirection: 'column' }}>
-              <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-                <CardHeader title="Your Mic (Candidate)" avatar={<PersonIcon />} sx={{ pb: 1 }} />
-                <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-                  {role !== 'viewer' ? (
-                    <>
-                      <FormControlLabel
-                        control={<Switch checked={isManualMode} onChange={e => setIsManualMode(e.target.checked)} color="primary" />}
-                        label="Manual Input Mode"
-                        sx={{ mb: 1 }}
-                      />
-                      <TextField
-                        fullWidth
-                        multiline
-                        rows={8}
-                        variant="outlined"
-                        value={micTranscription}
-                        onChange={(e) => handleManualInputChange(e.target.value, 'microphone')}
-                        onKeyDown={(e) => handleKeyPress(e, 'microphone')}
-                        placeholder="Your speech or manual input..."
-                        sx={{ mb: 2, flexGrow: 1 }}
-                      />
-                    </>
-                  ) : (
-                    <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1, minHeight: 200, border: '1px solid #e0e0e0', overflowY: 'auto', flexGrow: 1 }}>
-                      <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', color: micTranscription ? 'text.primary' : 'text.secondary' }}>
-                        {micTranscription || "Waiting for transcription..."}
-                      </Typography>
-                    </Box>
-                  )}
-                  {role !== 'viewer' && (
-                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 'auto' }}>
-                      <Button
-                        onClick={startMicrophoneRecognition}
-                        variant="contained"
-                        color={isMicrophoneActive ? 'error' : 'primary'}
-                        startIcon={isMicrophoneActive ? <MicOffIcon /> : <MicIcon />}
-                        sx={{ flexGrow: 1 }}
-                      >
-                        {isMicrophoneActive ? 'Stop Mic' : 'Start Mic'}
-                      </Button>
-                      <Tooltip title="Clear Your Transcription">
-                        <IconButton onClick={handleClearMicTranscription}><DeleteSweepIcon /></IconButton>
-                      </Tooltip>
-                      {isManualMode && (
-                        <Button
-                          onClick={() => handleManualSubmit('microphone')}
+          <Container maxWidth="xl" sx={{ flexGrow: 1, py: 2, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <Grid container spacing={2} sx={{ flexGrow: 1, height: '100%' }}>
+              {/* Left Panel: System Audio */}
+              <Grid item xs={12} md={4} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <Card>
+                  <CardHeader title="System Audio (Interviewer)" avatar={<HearingIcon />} sx={{ pb: 1 }} />
+                  <CardContent>
+                    {role !== 'viewer' ? (
+                      <>
+                        <FormControlLabel
+                          control={<Switch checked={systemAutoMode} onChange={e => setSystemAutoMode(e.target.checked)} color="primary" />}
+                          label="Auto-Submit Question"
+                          sx={{ mb: 1 }}
+                        />
+                        <TextField
+                          fullWidth
+                          multiline
+                          rows={3}
                           variant="outlined"
-                          color="primary"
-                          startIcon={<SendIcon />}
-                          disabled={isProcessing || !micTranscription.trim()}
+                          value={transcriptionFromStore}
+                          onChange={(e) => handleManualInputChange(e.target.value, 'system')}
+                          onKeyDown={(e) => handleKeyPress(e, 'system')}
+                          placeholder="Interviewer's speech..."
+                          sx={{ mb: 2 }}
+                        />
+                      </>
+                    ) : (
+                      <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1, minHeight: 80, border: '1px solid #e0e0e0', overflowY: 'auto' }}>
+                        <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', color: transcriptionFromStore ? 'text.primary' : 'text.secondary' }}>
+                          {transcriptionFromStore || "Waiting for transcription..."}
+                        </Typography>
+                      </Box>
+                    )}
+                    {role !== 'viewer' && (
+                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                        <Button
+                          onClick={startSystemAudioRecognition}
+                          variant="contained"
+                          color={isSystemAudioActive ? 'error' : 'primary'}
+                          startIcon={isSystemAudioActive ? <StopScreenShareIcon /> : <ScreenShareIcon />}
+                          sx={{ flexGrow: 1 }}
                         >
-                          Submit
+                          {isSystemAudioActive ? 'Stop System Audio' : 'Record System Audio'}
                         </Button>
-                      )}
-                    </Box>
-                  )}
-                </CardContent>
-              </Card>
-            </Grid>
-          </Grid>
-        </Container>
+                        <Typography variant="caption" sx={{ mt: 1, display: 'block', width: '100%' }}>
+                          {isSystemAudioActive ? 'Recording system audio...' : 'Select "Chrome Tab" and check "Share audio" when prompted.'}
+                        </Typography>
+                        <Tooltip title="Clear System Transcription">
+                          <IconButton onClick={handleClearSystemTranscription}><DeleteSweepIcon /></IconButton>
+                        </Tooltip>
+                        {!systemAutoMode && (
+                          <Button
+                            onClick={() => handleManualSubmit('system')}
+                            variant="outlined"
+                            color="primary"
+                            startIcon={<SendIcon />}
+                            disabled={isProcessing || !transcriptionFromStore.trim()}
+                          >
+                            Submit
+                          </Button>
+                        )}
+                      </Box>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+                  <CardHeader
+                    title="Question History"
+                    avatar={<PlaylistAddCheckIcon />}
+                    action={
+                      role !== 'viewer' && (
+                        <Button
+                          variant="contained"
+                          size="small"
+                          onClick={handleCombineAndSubmit}
+                          disabled={selectedQuestions.length === 0 || isProcessing}
+                          startIcon={isProcessing ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
+                        >
+                          {isProcessing ? "Thinking..." : "Ask Combined"}
+                        </Button>
+                      )
+                    }
+                    sx={{ pb: 1, borderBottom: `1px solid ${theme.palette.divider}` }}
+                  />
+
+                  <CardContent sx={{ flexGrow: 1, overflow: 'hidden', p: 0 }}>
+                    <ScrollToBottom className="scroll-to-bottom" followButtonClassName="hidden-follow-button">
+                      <List dense sx={{ pt: 0, px: 1 }}>
+                        {conversationHistory
+                          .filter(e => (e.type || '').toUpperCase() === 'QUESTION')
+                          .slice().reverse() // Show newest questions first
+                          .map(renderQuestionHistoryItem)}
+                      </List>
+                    </ScrollToBottom>
+                  </CardContent>
+                </Card>
+              </Grid >
+
+              {/* Center Panel (Cards + Thought) */}
+              < Grid item xs={12} md={4} sx={{ display: 'flex', flexDirection: 'column', height: '100%' }
+              }>
+                {/* 1. Conversation Cards (History) */}
+                < Box sx={{ flexGrow: 1, minHeight: 0, mb: 2 }}>
+                  <ConversationCards history={conversationHistory} />
+                </Box >
+
+                {/* 2. active Thought Process (The "Thick Border" Box) */}
+                < Box sx={{ mb: 2 }}>
+                  <ThoughtProcess currentThought={displayThought} status={thoughtStatus} onForceFinalize={handleForceFinalize} />
+                </Box >
+              </Grid >
+
+              {/* Right Panel */}
+              < Grid item xs={12} md={4} sx={{ display: 'flex', flexDirection: 'column' }}>
+                <Card sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+                  <CardHeader title="Your Mic (Candidate)" avatar={<PersonIcon />} sx={{ pb: 1 }} />
+                  <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+                    {role !== 'viewer' ? (
+                      <>
+                        <FormControlLabel
+                          control={<Switch checked={isManualMode} onChange={e => setIsManualMode(e.target.checked)} color="primary" />}
+                          label="Manual Input Mode"
+                          sx={{ mb: 1 }}
+                        />
+                        <TextField
+                          fullWidth
+                          multiline
+                          rows={8}
+                          variant="outlined"
+                          value={micTranscription}
+                          onChange={(e) => handleManualInputChange(e.target.value, 'microphone')}
+                          onKeyDown={(e) => handleKeyPress(e, 'microphone')}
+                          placeholder="Your speech or manual input..."
+                          sx={{ mb: 2, flexGrow: 1 }}
+                        />
+                      </>
+                    ) : (
+                      <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1, minHeight: 200, border: '1px solid #e0e0e0', overflowY: 'auto', flexGrow: 1 }}>
+                        <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', color: micTranscription ? 'text.primary' : 'text.secondary' }}>
+                          {micTranscription || "Waiting for transcription..."}
+                        </Typography>
+                      </Box>
+                    )}
+                    {role !== 'viewer' && (
+                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 'auto' }}>
+                        <Button
+                          onClick={startMicrophoneRecognition}
+                          variant="contained"
+                          color={isMicrophoneActive ? 'error' : 'primary'}
+                          startIcon={isMicrophoneActive ? <MicOffIcon /> : <MicIcon />}
+                          sx={{ flexGrow: 1 }}
+                        >
+                          {isMicrophoneActive ? 'Stop Mic' : 'Start Mic'}
+                        </Button>
+                        <Tooltip title="Clear Your Transcription">
+                          <IconButton onClick={handleClearMicTranscription}><DeleteSweepIcon /></IconButton>
+                        </Tooltip>
+                        {isManualMode && (
+                          <Button
+                            onClick={() => handleManualSubmit('microphone')}
+                            variant="outlined"
+                            color="primary"
+                            startIcon={<SendIcon />}
+                            disabled={isProcessing || !micTranscription.trim()}
+                          >
+                            Submit
+                          </Button>
+                        )}
+                      </Box>
+                    )}
+                  </CardContent>
+                </Card>
+              </Grid >
+            </Grid >
+          </Container >
+        </Box >
 
         <SettingsDialog
           open={settingsOpen}
@@ -1342,7 +1399,7 @@ export default function InterviewPage() {
             {snackbarMessage}
           </Alert>
         </Snackbar>
-      </Box>
+      </Box >
       <style jsx global>{`
         .scroll-to-bottom {
           height: 100%;
