@@ -11,11 +11,11 @@ This roadmap outlines the plan to migrate from Azure-only transcription to a hig
 *   It will run fast on your RTX 3080.
 
 ### Technical Steps
-- [ ] **Tech Stack Selection**: Python + FastAPI + `faster-whisper`.
+- [x] **Tech Stack Selection**: Python + FastAPI + `faster-whisper`.
     *   *Why*: Python has the best ML support. FastAPI is high-performance and async (critical for streaming audio). `faster-whisper` is optimized for CTranslate2 and much faster than standard Whisper.
-- [ ] **API Design**: Define WebSocket endpoints for real-time audio streaming.
+- [x] **API Design**: Define WebSocket endpoints for real-time audio streaming.
     *   `/ws/transcribe`: Accepts binary audio stream, returns JSON transcript events.
-- [ ] **Implementation**:
+- [x] **Implementation**:
     *   Setup Python project structure.
     *   Implement VAD (Voice Activity Detection) to avoid processing silence (saving GPU cycles).
     *   Implement the `faster-whisper` loop.
@@ -28,14 +28,14 @@ This roadmap outlines the plan to migrate from Azure-only transcription to a hig
 *   When enabled, the app talks to your local computer instead of Microsoft Azure.
 
 ### Technical Steps
-- [ ] **Audio Capture Refactor**:
+- [x] **Audio Capture Refactor**:
     *   We need to abstract audio capture into a generic `AudioProvider` interface.
     *   Implement a `WebAudioRecorder` that captures raw PCM data from the browser's `AudioContext`.
-- [ ] **Socket Client**:
+- [x] **Socket Client**:
     *   Create a `LocalTranscriptionClient` in the frontend.
     *   Connects to `ws://localhost:8000/ws/transcribe`.
     *   Resamples browser audio (usually 44.1/48kHz) to Whisper's required rate (16kHz).
-- [ ] **Settings UI**:
+- [x] **Settings UI**:
     *   Add fields for `Local Server URL` (default: `ws://localhost:8000`).
     *   Add Toggle: `Transcription Provider: [Azure | Local]`.
 
@@ -53,14 +53,39 @@ This roadmap outlines the plan to migrate from Azure-only transcription to a hig
 *   **Scenario B (Remote)**: Laptop runs "Listener" in a meeting room, Desktop runs "Viewer" in your office.
 
 ### Technical Steps
-- [ ] **Socket.IO Sync Hub**:
+- [x] **Socket.IO Sync Hub**:
     *   Update the Python Backend to act as a **State Synchronization Hub**.
     *   It maintains the "Session Truth": current transcript, AI response history, and active audio streams.
-- [ ] **Role-Based Client Logic**:
+- [x] **Role-Based Client Logic**:
     *   Update frontend to support "Join Mode":
         *   `?role=listener`: Activates VAD & Streaming, hides UI (or shows dummy UI).
         *   `?role=viewer`: Disables Mic/System audio, subscribes to State Updates.
         *   `?role=full` (Default): Does both.
-- [ ] **"Stealth" Listener Mode**:
+- [x] **"Stealth" Listener Mode**:
     *   Implement the "Disguised" UI for the `listener` role.
 
+## Phase 4: UI/UX Overhaul & 4-Column Dashboard (New) 🌟
+**Goal**: Completely restructure the Viewer experience into a high-density, informational dashboard.
+
+### User View
+*   **4-Column Layout**: Questions | Context | Transcript | Candidate.
+*   **Split View**: A dedicated dashboard page separate from the listener.
+*   **Local AI**: Use local LLMs for fast, cheap summarization.
+
+### Technical Steps - Backend
+- [ ] **Local LLM Integration**:
+    *   Connect to local Ollama instance (Llama 3.2).
+    *   Implement `summarize_thought_local` endpoint.
+- [ ] **Fact Checking Service**:
+    *   Implement logic to analyze Candidate statements against known facts.
+- [ ] **Research Service**:
+    *   Implement logic to generate "5Ws" and "Keywords" on demand.
+
+### Technical Steps - Frontend
+- [ ] **Dashboard Layout**:
+    *   Create `Layout4Column` component.
+    *   Implement `QuestionsPanel`, `ContextPanel`, `TranscriptPanel`, `CandidatePanel`.
+- [ ] **Research Modal**:
+    *   Clicking a question opens a modal with deep-dive info.
+- [ ] **Fact Check UI**:
+    *   Display Green/Red verification indicators on Candidate cards.

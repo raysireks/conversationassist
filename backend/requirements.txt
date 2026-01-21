@@ -7,3 +7,4 @@ python-multipart
 openai
 google-generativeai
 python-dotenv
+sentence-transformers
