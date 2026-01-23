@@ -7,5 +7,5 @@ description: Stop the full stack (backend + frontend) by killing process on port
    - Kills process on port 8000 (Python Backend)
    - Cleans up .next cache
 ```bash
-wsl bash -c "lsof -ti:3000 | xargs -r kill -9; lsof -ti:8000 | xargs -r kill -9; rm -rf .next"
+wsl bash -c "pkill -f 'python main.py' || true; pkill -f 'next dev' || true; rm -rf .next"
 ```

@@ -5,7 +5,7 @@ description: Kill stale processes and restart the full stack (backend + frontend
 1. Clean Slate
    - // turbo
    - Run the `/stop-hosting` workflow to ensure ports are free.
-   - (Or manually run: `wsl bash -c "lsof -ti:3000 | xargs -r kill -9; lsof -ti:8000 | xargs -r kill -9; rm -rf .next"`)
+   - (Or manually run: `wsl bash -c "pkill -f 'python main.py' || true; pkill -f 'next dev' || true; rm -rf .next"`)
 
 > [!NOTE]
 > Services will be started in the background. They will **REMAIN RUNNING** for manual verification.
