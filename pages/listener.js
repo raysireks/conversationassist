@@ -133,18 +133,7 @@ export default function InterviewPage() {
   // const silenceTimer = useRef(null); // Removed in favor of ThoughtManager
   const finalTranscript = useRef({ system: '', microphone: '' });
 
-  // Real-time Thought Display Logic
-  // We combine the 'activeThought' (confirmed by backend) with 'systemInterimTranscription' (streaming)
-  // to give immediate feedback.
-  const displayThought = useMemo(() => {
-    const interim = systemInterimTranscription.current ? systemInterimTranscription.current.trim() : '';
-    if (thoughtStatus === 'forming' && interim) {
-      // Avoid duplicating if interim is already part of active (simple check)
-      if (activeThought.endsWith(interim)) return activeThought;
-      return `${activeThought} ${interim}`.trim();
-    }
-    return activeThought;
-  }, [activeThought, thoughtStatus, systemInterimTranscription.current]); // access ref.current in render is risky, but we force re-render via recognizing event
+
 
   const isManualModeRef = useRef(isManualMode);
   const systemAutoModeRef = useRef(systemAutoMode);
