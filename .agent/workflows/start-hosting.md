@@ -6,7 +6,7 @@ description: Kill stale processes and restart the full stack (backend + frontend
 // turbo
 2. Execute kill commands via bash (ignoring missing processes)
 ```bash
-wsl bash -c "pkill -f next || true; pkill -f main.py || true; rm -rf .next"
+wsl bash -c "lsof -ti:3000 | xargs -r kill -9; lsof -ti:8000 | xargs -r kill -9; rm -rf .next"
 ```
 
 3. Start the Backend Service
