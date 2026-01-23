@@ -15,7 +15,7 @@ description: Kill stale processes and restart the full stack (backend + frontend
    - Note: Run this in the background
    - We updated package.json to use '.' instead of 'source' for compatibility
 ```bash
-wsl npm run backend:dev
+wsl npm run backend:gpu
 ```
 
 4. Start the Frontend Service
