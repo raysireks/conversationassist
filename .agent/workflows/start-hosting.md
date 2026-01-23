@@ -2,12 +2,14 @@
 description: Kill stale processes and restart the full stack (backend + frontend)
 ---
 
-1. Kill existing Node.js/Next.js and Python processes (Clean Slate)
-// turbo
-2. Execute kill commands via bash (ignoring missing processes)
-```bash
-wsl bash -c "lsof -ti:3000 | xargs -r kill -9; lsof -ti:8000 | xargs -r kill -9; rm -rf .next"
-```
+1. Clean Slate
+   - // turbo
+   - Run the `/stop-hosting` workflow to ensure ports are free.
+   - (Or manually run: `wsl bash -c "lsof -ti:3000 | xargs -r kill -9; lsof -ti:8000 | xargs -r kill -9; rm -rf .next"`)
+
+> [!NOTE]
+> Services will be started in the background. They will **REMAIN RUNNING** for manual verification.
+> When finished, run `/stop-hosting` or manually kill the terminals.
 
 3. Start the Backend Service
    - Note: Run this in the background
